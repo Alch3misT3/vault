@@ -200,7 +200,13 @@ function buildMenu() {
 // Installed app: electron-updater downloads new GitHub releases in the background
 // (checked against the release's SHA-512) and installs them on restart.
 // Portable app: can't replace itself, so it just offers the download page.
-const PUBLISH = (require('./package.json').build || {}).publish || null;
+// Where releases live. (Kept here because the build tool strips 'build.publish' from the bundled package.json.)
+const PUBLISH = { owner: 'Alch3misT3', repo: 'vault' };
+
+// Update problems are written to update.log in the app's data folder (no passwords or vault data ever go here).
+function logUpdate(msg) {
+  try { fs.appendFileSync(path.join(app.getPath('userData'), 'update.log'), new Date().toISOString() + '  ' + msg + '\n'); } catch {}
+}
 const update = { status: 'idle', version: null, url: null }; // idle | checking | downloading | ready | available | latest | error
 let autoUpdater = null;
 
@@ -234,7 +240,7 @@ async function checkForUpdates() {
     }
   } catch (err) {
     setUpdate({ status: 'error' });
-    console.error('update check failed', err && err.message);
+    logUpdate('check failed: ' + (err && err.message));
   }
   return { ...update };
 }
@@ -245,7 +251,7 @@ function setupUpdates() {
     autoUpdater = require('electron-updater').autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.logger = null;
+    autoUpdater.logger = { info: () => {}, debug: () => {}, warn: (m) => logUpdate('warn: ' + m), error: (m) => logUpdate('error: ' + m) };
     autoUpdater.on('update-available', (i) => setUpdate({ status: 'downloading', version: i.version }));
     autoUpdater.on('update-downloaded', (i) => setUpdate({ status: 'ready', version: i.version }));
     autoUpdater.on('error', () => { if (update.status !== 'ready') setUpdate({ status: 'error' }); });

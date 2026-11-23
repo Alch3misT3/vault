@@ -1,8 +1,8 @@
-{
+﻿{
   "name": "vault",
   "productName": "Vault",
-  "version": "1.0.0",
-  "description": "Vault — a private, offline password manager",
+  "version": "1.0.1",
+  "description": "Vault вЂ” a private, offline password manager",
   "author": "Vault",
   "license": "UNLICENSED",
   "main": "main.js",
@@ -20,7 +20,7 @@
   "build": {
     "appId": "local.vault.app",
     "productName": "Vault",
-    "copyright": "Copyright © 2026",
+    "copyright": "Copyright В© 2026",
     "directories": {
       "output": "dist",
       "buildResources": "build"

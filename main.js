@@ -251,6 +251,7 @@ function setupUpdates() {
     autoUpdater = require('electron-updater').autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.disableWebInstaller = true;
     autoUpdater.logger = { info: () => {}, debug: () => {}, warn: (m) => logUpdate('warn: ' + m), error: (m) => logUpdate('error: ' + m) };
     autoUpdater.on('update-available', (i) => setUpdate({ status: 'downloading', version: i.version }));
     autoUpdater.on('update-downloaded', (i) => setUpdate({ status: 'ready', version: i.version }));

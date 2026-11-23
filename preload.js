@@ -1,0 +1,24 @@
+'use strict';
+const { contextBridge, ipcRenderer } = require('electron');
+
+contextBridge.exposeInMainWorld('vault', {
+  status: () => ipcRenderer.invoke('vault:status'),
+  create: (pw) => ipcRenderer.invoke('vault:create', pw),
+  unlock: (pw) => ipcRenderer.invoke('vault:unlock', pw),
+  save: (items) => ipcRenderer.invoke('vault:save', items),
+  changePassword: (cur, next, items) => ipcRenderer.invoke('vault:change-password', cur, next, items),
+  lock: () => ipcRenderer.invoke('vault:lock'),
+  copy: (text, secret) => ipcRenderer.invoke('clip:copy', text, secret),
+  open: (url) => ipcRenderer.invoke('open:url', url),
+  rowMenu: (opts) => ipcRenderer.invoke('menu:row', opts),
+  moreMenu: () => ipcRenderer.invoke('menu:more'),
+  pickImport: () => ipcRenderer.invoke('file:pick-import'),
+  exportFile: (kind, contents, pw) => ipcRenderer.invoke('file:export', kind, contents, pw),
+  restore: () => ipcRenderer.invoke('file:restore'),
+  checkUpdates: () => ipcRenderer.invoke('update:check'),
+  updateState: () => ipcRenderer.invoke('update:state'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  onUpdate: (fn) => ipcRenderer.on('update', (_e, st) => fn(st)),
+  onMenu: (fn) => ipcRenderer.on('menu', (_e, cmd) => fn(cmd)),
+  onLocked: (fn) => ipcRenderer.on('locked', () => fn()),
+});

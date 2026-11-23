@@ -1,0 +1,5 @@
+folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp
+Games,1,login,Riot Games,"Main account
+EUW server","PIN: 4821
+Recovery code: ABCD-EFGH",0,https://account.riotgames.com/,riotplayer,R1ot-pass!,
+,,login,Supabase,,API token: sbp_test_123,0,https://supabase.com/,owner@example.com,supa-pass,

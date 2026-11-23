@@ -1,0 +1,3 @@
+Title,URL,Username,Password,Notes,OTPAuth
+Netflix (netflix.com),https://www.netflix.com/,family@example.com,xkvbqe-Tmwz4h-pnrcdu,Shared with family,
+GitHub,https://github.com/,dev-user,gh-Pa55-word,,otpauth://totp/GitHub:dev-user?secret=JBSWY3DPEHPK3PXP

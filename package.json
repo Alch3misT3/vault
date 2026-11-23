@@ -1,0 +1,75 @@
+{
+  "name": "vault",
+  "productName": "Vault",
+  "version": "1.0.0",
+  "description": "Vault — a private, offline password manager",
+  "author": "Vault",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "dist": "electron-builder --win nsis portable",
+    "release": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
+  },
+  "devDependencies": {
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "local.vault.app",
+    "productName": "Vault",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "executableName": "Vault"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Vault",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "Vault-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Vault-Portable-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Alch3misT3",
+      "repo": "vault",
+      "releaseType": "release"
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Alch3misT3/vault.git"
+  }
+}

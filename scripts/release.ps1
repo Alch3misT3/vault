@@ -2,7 +2,9 @@
 # Usage: raise "version" in package.json, then run
 #   .\scripts\release.ps1 -Notes "What changed in this version"
 param([string]$Notes = '')
-$ErrorActionPreference = 'Stop'
+# Native tools write progress to stderr; Windows PowerShell 5 would treat that as fatal,
+# so failures are detected through exit codes below instead.
+$ErrorActionPreference = 'Continue'
 Set-Location (Join-Path $PSScriptRoot '..')
 $gh = 'C:\Program Files\GitHub CLI\gh.exe'
 
@@ -15,7 +17,7 @@ npx electron . --smoke
 if ($LASTEXITCODE -ne 0) { throw 'Smoke test failed, nothing was released.' }
 
 # 2. Create the release up front (the installer and portable uploads otherwise race to create it).
-& $gh release view $tag -R Alch3misT3/vault *> $null
+& $gh release view $tag -R Alch3misT3/vault > $null 2>&1
 if ($LASTEXITCODE -ne 0) {
   if (-not $Notes) { $Notes = "Vault $version" }
   & $gh release create $tag -R Alch3misT3/vault --title "Vault $version" --notes $Notes --target main

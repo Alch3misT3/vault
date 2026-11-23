@@ -11,7 +11,8 @@
     "start": "electron .",
     "smoke": "electron . --smoke",
     "dist": "electron-builder --win nsis portable",
-    "release": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
+    "release": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "screenshots": "electron . --screenshots"
   },
   "devDependencies": {
     "electron": "^45.4.1",

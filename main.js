@@ -10,7 +10,8 @@ const crypto = require('crypto');
 
 // Test/dev switches only exist when running from source, never in the built app.
 const DEV = !app.isPackaged;
-const SMOKE = DEV && process.argv.includes('--smoke');
+const SHOTS = DEV && process.argv.includes('--screenshots'); // README screenshots, same sandbox as the smoke test
+const SMOKE = DEV && (process.argv.includes('--smoke') || SHOTS);
 const MAKE_ICON = DEV && process.argv.includes('--make-icon');
 
 // Portable edition (Vault-Portable.exe): keep the data in a "Vault Data" folder
@@ -437,7 +438,8 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
     buildMenu();
     createWindow();
     setupUpdates();
-    if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO });
+    if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme });
+    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO });
   });
   app.on('window-all-closed', () => { lock(); app.quit(); });
 }

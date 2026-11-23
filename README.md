@@ -2,6 +2,39 @@
 
 A private, offline password manager for Windows, styled after Apple's Liquid Glass design.
 
+<p align="center">
+  <img src="docs/screenshots/main-light.png" alt="Vault main window in light mode: a frosted-glass sidebar listing accounts, and the selected Twitch account with its user name, hidden password, login link, a stream key field and notes" width="100%">
+</p>
+
+## A look around
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/main-dark.png" alt="Vault in dark mode showing a Discord account with a hidden backup-codes field"></td>
+    <td width="50%"><img src="docs/screenshots/search.png" alt="Searching for an email address narrows the list to the seven accounts that use it"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Dark mode.</b> The background picks up each account's colour.</td>
+    <td align="center"><b>Instant search</b> across names, emails, sites and notes.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/edit.png" alt="Editing a Spotify account: a suggested strong password, the automatically made login link, an Add Field button and notes"></td>
+    <td width="50%"><img src="docs/screenshots/import.png" alt="Import dialog asking to import 48 accounts from a Bitwarden export"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Editing.</b> Strong password suggestions, extra fields and a login link made from the site name.</td>
+    <td align="center"><b>Import</b> from Apple Passwords, Chrome, Bitwarden, 1Password and more.</td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/lock.png" alt="Lock screen: a glass card asking for the master password"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><b>Locked</b> after 5 minutes idle, or when Windows locks or sleeps.</td>
+  </tr>
+</table>
+
+<sub>Screenshots use made-up demo accounts. Regenerate them with <code>npm run screenshots</code>.</sub>
+
 ## Download
 
 Get the latest version from **[Releases](../../releases/latest)**:

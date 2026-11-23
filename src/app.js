@@ -438,6 +438,7 @@ function editView() {
       h('input', { id: 'f-web', class: 'in', value: d.website, placeholder: 'netflix.com', oninput: set('website'), spellcheck: 'false', autocomplete: 'off' }), h('span')));
 
   const hint = h('div', { class: 'hint', id: 'linkHint' });
+  updateLinkHint(hint);
 
   const fieldRows = d.fields.map((f, i) => {
     const val = h('input', { class: 'in' + (f.secret ? ' secret' : ''), type: f.secret ? 'password' : 'text', value: f.value, placeholder: 'Value', 'aria-label': (f.label || 'Field') + ' value', spellcheck: 'false', autocomplete: 'off', oninput: (e) => { f.value = e.target.value; } });
@@ -473,12 +474,11 @@ function editView() {
     h('div', { class: 'section-label' }, 'Notes'),
     notes, danger));
 
-  requestAnimationFrame(updateLinkHint);
   return [bar, scroll];
 }
 
-function updateLinkHint() {
-  const el = $('#linkHint');
+function updateLinkHint(target) {
+  const el = target || $('#linkHint');
   if (!el || !state.draft) return;
   const l = window.loginLink(state.draft);
   if (l) el.replaceChildren('Login link: ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openLink(l.url); } }, l.url));

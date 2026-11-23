@@ -191,7 +191,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("deleteItem(window.__vaultState.items.find(i => i.title === 'Twitch'))");
     await shot('13-dark-delete-alert');
     await js("document.getElementById('alertOk').click()");
-    await wait(300);
+    await waitFor('window.__vaultState.items.length === 10');
     check('delete removes account', (await count()) === 10);
     nativeTheme.themeSource = 'light';
     await js("lockNow()");

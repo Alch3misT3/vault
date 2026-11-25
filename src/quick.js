@@ -29,13 +29,15 @@ const svgUse = (id, cls) => {
 
 const TILE_COLORS = ['#0a6cff', '#5856d6', '#9b4dca', '#d6245a', '#d9352b', '#c25e00', '#1d8f47', '#11809a', '#3a5bd9', '#0f8a7a'];
 function tileColor(item) {
-  const brand = window.brandColor(item);
+  const brand = (item.logo && item.logo.color) || window.brandColor(item);
   if (brand) return brand;
   let x = 0;
   for (const ch of String(item.title || item.website || '').trim().toLowerCase()) x = (x * 31 + ch.codePointAt(0)) >>> 0;
   return TILE_COLORS[x % TILE_COLORS.length];
 }
 function tile(item) {
+  const lg = item.logo;
+  if (lg && lg.src) return h('div', { class: 'tile logo' + (lg.size < 48 ? ' inset' : ''), style: `--tile:${lg.bg || '#ffffff'}`, 'aria-hidden': 'true' }, h('img', { src: lg.src, alt: '' }));
   const name = (item.title || item.website || '?').trim();
   const letter = (name.match(/[\p{L}\p{N}]/u) || ['?'])[0].toUpperCase();
   return h('div', { class: 'tile', style: `--tile:${tileColor(item)}`, 'aria-hidden': 'true' }, letter);
@@ -200,5 +202,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-q.onShow(() => { st.sel = 0; $('#qq').value = ''; refresh(); });
+q.onShow(() => {
+  st.sel = 0; $('#qq').value = ''; refresh();
+  const p = $('.q-panel');
+  p.classList.remove('in', 'out'); void p.offsetWidth; p.classList.add('in');
+});
+q.onHiding(() => $('.q-panel').classList.add('out'));
 window.__quick = st; // smoke test only

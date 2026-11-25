@@ -57,6 +57,8 @@ Vault isn't code-signed yet, so Windows may say *"Windows protected your PC"* th
 - Password generator: Apple-style (`xkvbqe-Tmwz4h-pnrcdu`), fully random (length and symbols), or easy-to-type words
 - Import from Apple Passwords, Chrome/Edge, Firefox, Bitwarden (CSV/JSON), 1Password, LastPass, Proton Pass, KeePass, Dashlane
 - Export to CSV or JSON, and encrypted backup and restore
+- **Real site logos** on every account, fetched from each site itself (never through Google or another icon service) and stored encrypted with your vault. The background behind an open account takes the logo's colour. Turn it off in ••• → Download Site Logos.
+- Liquid Glass light and motion: light follows the pointer across glass, buttons squish when pressed, glass menus with full keyboard control. With Windows "Show animations" off, only short fades remain.
 - Light and dark mode, keyboard shortcuts, right-click menus
 
 ## Browser extension
@@ -74,7 +76,7 @@ How it stays private: Vault listens only on `127.0.0.1` and only after a browser
 
 ## Security
 
-- Everything stays on your computer; nothing is sent anywhere. The only internet request is the update check against this repository's releases. If you connect a browser, Vault also talks to it over 127.0.0.1, which never leaves the PC.
+- Your passwords stay on your computer; nothing is sent anywhere. Internet requests: the update check against this repository's releases and, unless you turn it off, the site logos. A logo is asked from the site itself with only its address: no cookies, no account data. Logos are redrawn as plain images (SVG scripts never run) and cached encrypted with your vault, so the cache doesn't reveal which sites you use. If you connect a browser, Vault also talks to it over 127.0.0.1, which never leaves the PC.
 - The vault file is encrypted with **AES-256-GCM** using a key derived from your master password with **scrypt** (N=2¹⁷, r=8, p=1).
 - The master password is never stored. If you forget it, the vault can't be opened.
 - Copied passwords and codes are cleared from the clipboard after 30 seconds.

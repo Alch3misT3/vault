@@ -3,7 +3,7 @@
 // Holds the encryption key, reads/writes the encrypted vault file and is the
 // only place that touches the clipboard or opens links in the default browser.
 
-const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen, safeStorage, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -60,6 +60,7 @@ function decrypt(key, box) {
 const vaultPath = () => path.join(app.getPath('userData'), 'vault.json');
 
 let session = null; // { key: Buffer, salt: Buffer, kdf }
+let logos = null;   // site logos (logos.js), encrypted with a key derived from session.key
 let failedAttempts = 0;
 
 function readFile() {
@@ -86,6 +87,7 @@ function persist(items) {
 }
 
 function lock() {
+  if (logos) logos.lock();
   if (session) session.key.fill(0);
   session = null;
 }
@@ -343,9 +345,11 @@ ipcMain.handle('vault:change-password', async (_e, current, next, items) => {
   if (!(await verifyPassword(String(current)))) return { ok: false, error: 'wrong' };
   const salt = crypto.randomBytes(16);
   const key = await deriveKey(next, salt);
+  const oldKey = Buffer.from(session.key);
   session.key.fill(0);
   session = { key, salt, kdf: { N: KDF.N, r: KDF.r, p: KDF.p } };
   persist(items);
+  try { if (logos) logos.rekey(oldKey); } finally { oldKey.fill(0); }
   return { ok: true };
 });
 
@@ -411,59 +415,26 @@ ipcMain.handle('file:restore', async () => {
   try {
     const f = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (f.app !== 'vault' || !f.kdf || !f.data) return { ok: false, error: 'That file is not a Vault backup.' };
+    if (logos) logos.reset();
     writeFileAtomic(f);
     lock();
     return { ok: true };
   } catch { return { ok: false, error: 'That file is not a Vault backup.' }; }
 });
 
-ipcMain.handle('menu:more', () => new Promise((resolve) => {
-  let picked = null;
-  const pick = (v) => () => (picked = v);
-  Menu.buildFromTemplate([
-    { label: 'Import Passwords…', click: pick('import') },
-    { label: 'Export Passwords…', click: pick('export') },
-    { type: 'separator' },
-    { label: 'Back Up Vault…', click: pick('backup') },
-    { label: 'Restore From Backup…', click: pick('restore') },
-    { type: 'separator' },
-    { label: 'Password Generator…', click: pick('generator') },
-    { label: 'Connect a Browser…', click: pick('browser') },
-    { label: 'Change Master Password…', click: pick('change-password') },
-    { type: 'separator' },
-    { label: 'Quick Search', accelerator: HOTKEY, registerAccelerator: false, click: () => showQuick() },
-    ...(canOpenAtLogin() ? [{ label: 'Open Vault When Windows Starts', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (m) => setOpenAtLogin(m.checked) }] : []),
-    { label: 'Check for Updates…', click: pick('check-updates') },
-    { label: 'Show Vault File', click: () => shell.showItemInFolder(vaultPath()) },
-  ]).popup({ window: win, callback: () => resolve(picked) });
-}));
-
 ipcMain.handle('vault:lock', () => { lock(); return true; });
 ipcMain.handle('clip:copy', async (_e, text, isSecret) => { await copy(text, !!isSecret); return true; });
 ipcMain.handle('open:url', (_e, url) => openUrl(url));
 
-// Native right-click menu for a list row.
-ipcMain.handle('menu:row', (_e, opts) => new Promise((resolve) => {
-  let picked = null;
-  const p = (v) => () => (picked = v);
-  const t = opts.deleted ? [
-    { label: 'Copy User Name', enabled: !!opts.hasUser, click: p('copy-user') },
-    { label: 'Copy Password', enabled: !!opts.hasPassword, click: p('copy-password') },
-    { type: 'separator' },
-    { label: 'Recover', click: p('recover') },
-    { label: 'Delete Now…', click: p('purge') },
-  ] : [
-    { label: 'Copy User Name', enabled: !!opts.hasUser, click: p('copy-user') },
-    { label: 'Copy Password', enabled: !!opts.hasPassword, click: p('copy-password') },
-    ...(opts.hasCode ? [{ label: 'Copy Verification Code', click: p('copy-code') }] : []),
-    { label: 'Open Login Page', enabled: !!opts.hasLink, click: p('open') },
-    { type: 'separator' },
-    { label: opts.favorite ? 'Remove from Favorites' : 'Add to Favorites', click: p('favorite') },
-    { label: 'Edit', click: p('edit') },
-    { label: 'Delete…', click: p('delete') },
-  ];
-  Menu.buildFromTemplate(t).popup({ window: win, callback: () => resolve(picked) });
-}));
+// The ••• and right-click menus are drawn by the window itself (Liquid Glass); these do what they can't.
+ipcMain.handle('app:prefs', () => ({ openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false }));
+ipcMain.handle('app:set-pref', (_e, key, value) => {
+  if (key === 'openAtLogin') setOpenAtLogin(!!value);
+  if (key === 'logos') logos.setEnabled(!!value);
+  return { openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false };
+});
+ipcMain.handle('app:quick', () => { showQuick(); return true; });
+ipcMain.handle('app:show-file', () => { if (!SMOKE) shell.showItemInFolder(vaultPath()); return true; });
 
 powerMonitor.on('lock-screen', () => { if (session) { lock(); send('locked'); } });
 powerMonitor.on('suspend', () => { if (session) { lock(); send('locked'); } });
@@ -491,16 +462,39 @@ function createQuick() {
   quick.on('close', (e) => { if (!quitting) { e.preventDefault(); hideQuick(); } });
 }
 
+// The panel fades in and out (window opacity) while its content springs in.
+let quickFade = null;
+const reducedMotion = () => { try { return systemPreferences.getAnimationSettings().prefersReducedMotion; } catch { return false; } };
+function fadeQuick(from, to, done) {
+  clearInterval(quickFade);
+  const steps = reducedMotion() ? 2 : 5; let i = 0;
+  quick.setOpacity(from);
+  quickFade = setInterval(() => {
+    i++;
+    if (!quick || quick.isDestroyed()) return clearInterval(quickFade);
+    const e = 1 - (1 - i / steps) ** 3;
+    quick.setOpacity(from + (to - from) * e);
+    if (i >= steps) { clearInterval(quickFade); quickFade = null; if (done) done(); }
+  }, 16);
+}
 function showQuick() {
   if (!quick || quick.isDestroyed()) createQuick();
-  if (quick.isVisible()) return hideQuick();
+  if (quick.isVisible() && !quickHiding) return hideQuick();
+  quickHiding = false;
   const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const [w, h] = quick.getSize();
   quick.setPosition(Math.round(workArea.x + (workArea.width - w) / 2), Math.round(workArea.y + workArea.height * 0.22));
-  const go = () => { quick.webContents.send('quick:show'); if (SMOKE) quick.showInactive(); else { quick.show(); quick.focus(); } };
+  const go = () => { quick.webContents.send('quick:show'); if (SMOKE) quick.showInactive(); else { quick.setOpacity(0); quick.show(); quick.focus(); fadeQuick(0, 1); } };
   if (quick.webContents.isLoading()) quick.webContents.once('did-finish-load', go); else go();
 }
-function hideQuick() { if (quick && !quick.isDestroyed() && quick.isVisible()) quick.hide(); }
+let quickHiding = false;
+function hideQuick() {
+  if (!quick || quick.isDestroyed() || !quick.isVisible() || quickHiding) return;
+  if (SMOKE) { quick.hide(); return; }
+  quickHiding = true;
+  quick.webContents.send('quick:hiding');
+  fadeQuick(1, 0, () => { if (quickHiding) { quick.hide(); quick.setOpacity(1); } quickHiding = false; });
+}
 
 const fromQuick = (e) => quick && !quick.isDestroyed() && e.sender === quick.webContents;
 const quickItem = (id) => (sessionItems() || []).find((x) => x.id === id && !x.deletedAt);
@@ -514,7 +508,7 @@ ipcMain.handle('quick:list', (e) => {
     locked: false,
     items: items.filter((x) => !x.deletedAt).map((x) => ({
       id: x.id, title: x.title, username: x.username, website: x.website, favorite: !!x.favorite,
-      hasPassword: !!x.password, hasCode: !!otp.otpField(x),
+      hasPassword: !!x.password, hasCode: !!otp.otpField(x), logo: logos ? logos.peek(x) : null,
     })),
   };
 });
@@ -637,6 +631,10 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     if (MAKE_ICON) return require('./scripts/make-icon')(app, BrowserWindow);
     buildMenu();
+    logos = require('./logos')({
+      app, BrowserWindow, ipcMain, getKey: () => (session ? session.key : null), prefs, setPref, send,
+      log: (m) => logUpdate('[logos] ' + m), smoke: SMOKE, links: require('./src/links.js'),
+    });
     createWindow();
     setupUpdates();
     setupBridge();
@@ -646,7 +644,8 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
       if (!globalShortcut.register(HOTKEY, showQuick)) console.warn('Quick-search hotkey is taken by another app');
     }
     if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme, showQuick, getQuick: () => quick });
-    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge });
+    else if (SMOKE && process.env.VAULT_REAL_LOGOS) require('./scripts/real-logos')({ win, nativeTheme, getLogos: () => logos });
+    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge, getLogos: () => logos });
   });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { lock(); app.quit(); });

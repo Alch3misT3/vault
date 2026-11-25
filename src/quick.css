@@ -64,3 +64,14 @@ body.quick { height: 100%; overflow: hidden; }
 }
 .q-status.show { opacity: 1; }
 .q-status svg { width: 15px; height: 15px; color: #1d8f47; }
+
+/* Opening and closing: the panel settles in with a spring and fades away quickly. */
+.q-panel { transform-origin: 50% 25%; }
+.q-panel.in { animation: q-in .46s var(--spring) both; }
+@keyframes q-in { from { opacity: 0; transform: scale(.965) translateY(-8px); } }
+.q-panel.out { opacity: 0; transform: scale(.985); transition: opacity .1s ease-out, transform .12s var(--ease-out); }
+.q-row { transition: background-color .12s; }
+@media (prefers-reduced-motion: reduce) {
+  .q-panel.in { animation-name: fade-in !important; }
+  .q-panel.out { transform: none; }
+}

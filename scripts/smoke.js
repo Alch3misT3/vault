@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick, getBridge }) {
+module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick, getBridge, getLogos }) {
   const root = path.join(__dirname, '..');
   const shots = path.join(root, 'smoke-shots');
   const fx = (n) => path.join(root, 'test-fixtures', n);
@@ -181,6 +181,13 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("showUpdate({ status: 'latest' })");
     check('update banner hides when up to date', await js("document.getElementById('updateBar').hidden"));
 
+    // Light, states, menus, motion, frame rate (ends locked, with reduced motion switched on)
+    const motion = await require('./smoke-motion')({ win, js, wait, waitFor, shot, check, clipboard });
+    await js(`(() => { const el = document.getElementById('pw1'); el.value = ${JSON.stringify(MASTER)}; el.dispatchEvent(new Event('input')); document.getElementById('unlockGo').click(); })()`);
+    check('unlocking: the lock card lifts away as the window arrives', (await waitFor("!document.getElementById('app').hidden")) && (await js("document.getElementById('lock').classList.contains('leaving') || document.getElementById('lock').hidden")) && (await js("document.getElementById('app').classList.contains('arrive')")));
+    await wait(400);
+    await motion.reduced();
+
     // 10. Favorites
     const live = () => js('window.__vaultState.items.filter(i => !i.deletedAt).length');
     const byName = (n) => `window.__vaultState.items.find(i => i.title === ${JSON.stringify(n)})`;
@@ -266,6 +273,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     const qjs = (code) => getQuick().webContents.executeJavaScript(code);
     const qWait = async (code, ms = 6000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await qjs(code)) return true; } catch {} await wait(80); } return false; };
     check('quick search opens with every account', await qWait(`window.__quick && window.__quick.items.length === ${await live()}`));
+    check('quick search springs in', await qjs("document.querySelector('.q-panel').classList.contains('in')"));
     await qjs(`(() => { const el = document.getElementById('qq'); el.value = 'git'; el.dispatchEvent(new Event('input')); })()`);
     check('quick search finds GitHub', await qWait("/GitHub/.test(document.querySelector('.q-row[aria-selected=\"true\"]').textContent)"));
     await qWait("!!document.querySelector('.q-code-num')", 3000);
@@ -303,7 +311,9 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
         set: async (o) => { Object.assign(store, o); },
         remove: async (keys) => { keys.forEach((k) => delete store[k]); },
       } } };
-      const ctx = vm.createContext({ chrome: chromeMock, crypto: globalThis.crypto, fetch, AbortController, setTimeout, clearTimeout, TextEncoder, TextDecoder, btoa, atob, URL, console, navigator: { userAgent: 'Mozilla/5.0 Chrome/140.0 Safari/537.36 Edg/140.0' } });
+      // Only the test Vault's port answers (a real Vault running on this PC may hold another one).
+      const testFetch = (u, o) => { const port = +new URL(u).port; return port === getBridge().state().port ? fetch(u, o) : Promise.reject(new TypeError('fetch failed')); };
+      const ctx = vm.createContext({ chrome: chromeMock, crypto: globalThis.crypto, fetch: testFetch, AbortController, setTimeout, clearTimeout, TextEncoder, TextDecoder, btoa, atob, URL, console, navigator: { userAgent: 'Mozilla/5.0 Chrome/140.0 Safari/537.36 Edg/140.0' } });
       vm.runInContext(fs.readFileSync(path.join(root, 'browser-extension', 'vault-client.js'), 'utf8'), ctx);
       const VC = ctx.VaultClient;
       const err = (p) => p.then(() => 'no error', (e) => e.message);
@@ -317,8 +327,8 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
       await wait(300);
       check('bridge listens on 127.0.0.1 while pairing', bridge.state().listening && bridge.state().pairing);
       const wrong = code.replace(/^./, (c) => (c === 'A' ? 'B' : 'A'));
-      check('a wrong code is refused', /doesn’t match/.test(await err(VC.pair(wrong))));
-      check('the right code pairs the browser', (await err(VC.pair(code.toLowerCase()))) === 'no error');
+      { const m = await err(VC.pair(wrong)); check('a wrong code is refused', /doesn’t match/.test(m), m); }
+      { const m = await err(VC.pair(code.toLowerCase())); check('the right code pairs the browser', m === 'no error', m); }
       check('Vault lists the browser as connected', await waitFor("/Microsoft Edge/.test(document.getElementById('brClients').textContent) && !document.getElementById('brAgain').hidden"));
       await shot('22-connect-browser');
       check('the code works only once', /Connect a Browser first|didn’t accept/.test(await err(VC.pair(code))));
@@ -376,6 +386,9 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
       await wait(200);
       check('bridge stops when no browser is paired', !bridge.state().listening);
     }
+
+    // 17. Site logos (local test websites only)
+    await require('./smoke-logos')({ app, win, js, wait, waitFor, shot, check, getLogos, getQuick, showQuick, nativeTheme, MASTER });
 
     // 10. Dark mode
     nativeTheme.themeSource = 'dark';

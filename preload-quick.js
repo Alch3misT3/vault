@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld('quick', {
   hide: () => ipcRenderer.invoke('quick:hide'),
   showMain: () => ipcRenderer.invoke('quick:main'),
   onShow: (fn) => ipcRenderer.on('quick:show', () => fn()),
+  onHiding: (fn) => ipcRenderer.on('quick:hiding', () => fn()),
 });

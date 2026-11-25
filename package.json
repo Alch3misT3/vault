@@ -1,7 +1,7 @@
 {
   "name": "vault",
   "productName": "Vault",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Vault: a private, offline password manager",
   "author": "Vault",
   "license": "UNLICENSED",
@@ -31,6 +31,8 @@
       "preload.js",
       "preload-quick.js",
       "bridge.js",
+      "logos.js",
+      "preload-logo.js",
       "browser-extension/**/*",
       "src/**/*",
       "build/icon.png",

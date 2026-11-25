@@ -52,18 +52,95 @@ const icon = (id, cls) => {
 
 // ---------- helpers ----------
 const TILE_COLORS = ['#0a6cff', '#5856d6', '#9b4dca', '#d6245a', '#d9352b', '#c25e00', '#1d8f47', '#11809a', '#3a5bd9', '#0f8a7a'];
-function tileColor(item) {
-  const brand = window.brandColor(item);
-  if (brand) return brand;
+// ---------- site logos ----------
+// Fetched by the main process from each site itself and kept encrypted with the vault.
+// domain -> { src: 'data:image/png…' | null, color, bg, size }
+const logos = { on: true, map: new Map() };
+const domainOf = (item) => { const l = item && window.loginLink(item); return l ? l.host : ''; };
+const logoOf = (item) => (logos.on ? logos.map.get(domainOf(item)) : null) || null;
+
+function hashColor(item) {
   let x = 0;
   for (const ch of String(item.title || item.website || '').trim().toLowerCase()) x = (x * 31 + ch.codePointAt(0)) >>> 0;
   return TILE_COLORS[x % TILE_COLORS.length];
 }
+// The site's real colour: from its logo, else the known brand colour, else a stable pick.
+function tileColor(item) {
+  const lg = logoOf(item);
+  return (lg && lg.color) || window.brandColor(item) || hashColor(item);
+}
+const hexRgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+const lum = (hex) => { const c = hexRgb(hex).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+function rgbHsl([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b); const mn = Math.min(r, g, b); const l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn; const s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const hh = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [hh * 60, s, l];
+}
+const hsl = (hh, s, l) => `hsl(${Math.round(hh)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%)`;
+// Letter tiles: white letters need a dark-enough colour, otherwise the letter goes dark.
+function tileStyle(color) {
+  const light = lum(color) > 0.42;
+  return { bg: color, ink: light ? '#1c1c1f' : '#fff' };
+}
+// The colour field behind the glass: the logo colour, kept in a range where text on the glass stays readable.
+function tintColor(item) {
+  const [hh, s, l] = rgbHsl(hexRgb(tileColor(item)));
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  return hsl(hh, Math.min(s, 0.85), Math.max(dark ? 0.22 : 0.3, Math.min(l, dark ? 0.5 : 0.6)));
+}
+
 function tile(item, big) {
   const name = (item.title || item.website || '?').trim();
+  const domain = domainOf(item);
+  const lg = logoOf(item);
+  const cls = 'tile' + (big ? ' big' : '');
+  if (lg && lg.src) {
+    // a real logo; small icons sit inset on their own background instead of being blown up
+    return h('div', { class: cls + ' logo' + (lg.size < (big ? 96 : 48) ? ' inset' : ''), style: `--tile:${lg.bg || '#ffffff'}`, 'data-domain': domain, 'aria-hidden': 'true' },
+      h('img', { src: lg.src, alt: '', draggable: 'false' }));
+  }
   const letter = (name.match(/[\p{L}\p{N}]/u) || ['?'])[0].toUpperCase();
-  return h('div', { class: 'tile' + (big ? ' big' : ''), style: `--tile:${tileColor(item)}`, 'aria-hidden': 'true' }, letter);
+  const t = tileStyle(tileColor(item));
+  return h('div', { class: cls, style: `--tile:${t.bg};--ink:${t.ink}`, 'data-domain': domain, 'aria-hidden': 'true' }, letter);
 }
+
+// New logos arrived: swap the tiles in place (no re-render, so nothing jumps or loses its scroll).
+function applyLogos(update) {
+  for (const [d, v] of Object.entries(update || {})) { if (v) logos.map.set(d, v); else logos.map.delete(d); }
+  for (const el of document.querySelectorAll('#app .tile[data-domain]')) {
+    const d = el.dataset.domain;
+    if (!update || !(d in update)) continue;
+    const it = el.closest('.row') ? state.items.find((x) => x.id === el.closest('.row').dataset.id)
+      : state.mode !== 'view' ? state.draft : current();
+    if (!it) continue;
+    const fresh = tile(it, el.classList.contains('big'));
+    if (el.id) fresh.id = el.id;
+    el.replaceWith(fresh);
+  }
+  const cur = state.mode !== 'view' ? state.draft : current();
+  if (cur && update && domainOf(cur) in update) setTint(cur);
+}
+// Ask the main process for the logos of every account (it fetches missing or week-old ones in the background).
+async function requestLogos() {
+  const domains = [...new Set(state.items.map(domainOf).filter(Boolean))];
+  const r = await api.logos(domains);
+  if (!r) return;
+  logos.on = r.on;
+  logos.map = new Map(Object.entries(r.map || {}));
+  applyLogos(r.map);
+}
+async function setLogos(on) {
+  const r = await api.setPref('logos', on);
+  logos.on = !!(r && r.logos);
+  if (!logos.on) logos.map.clear();
+  render();
+  if (logos.on) requestLogos();
+  toast(logos.on ? 'Site logos on' : 'Site logos off · nothing is downloaded');
+}
+api.onLogos(applyLogos);
 const byTitle = (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
 const current = () => state.items.find((x) => x.id === state.selectedId) || null;
 const fmtDate = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
@@ -77,10 +154,22 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 1900);
 }
 
-async function copy(text, secret, what) {
+async function copy(text, secret, what, btn, row) {
   if (!text) return;
   await api.copy(text, secret);
+  confirmCopy(btn, row);
   toast(secret ? `${what} copied · clears in 30 s` : `${what} copied`);
+}
+// The copy button turns into a green tick for a moment; the row it belongs to flashes.
+function confirmCopy(btn, row) {
+  if (row) { row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash'); }
+  const use = btn && btn.querySelector('use');
+  if (!use) return;
+  clearTimeout(btn._done);
+  btn.classList.remove('done'); void btn.offsetWidth;
+  use.setAttribute('href', '#i-check');
+  btn.classList.add('done');
+  btn._done = setTimeout(() => { use.setAttribute('href', '#i-copy'); btn.classList.remove('done'); }, 1400);
 }
 
 function openLink(url) {
@@ -199,10 +288,19 @@ async function tickCodes() {
     const left = window.otp.remaining(cfg);
     const code = window.otp.pretty(await otpCode(cfg));
     const txt = el.querySelector('.otp-code');
-    if (txt && txt.textContent !== code) txt.textContent = code;
+    if (txt && txt.textContent !== code) {
+      const fresh = /\d/.test(txt.textContent); // a new code, not the first fill
+      txt.textContent = code;
+      if (fresh) { txt.classList.remove('tick'); void txt.offsetWidth; txt.classList.add('tick'); }
+    }
     const ring = el.querySelector('.otp-ring');
     if (ring) {
-      ring.style.setProperty('--left', String(left / cfg.period));
+      const frac = left / cfg.period;
+      const prev = parseFloat(ring.dataset.left || '0');
+      ring.dataset.left = String(frac);
+      // a new period: the ring refills with a spring instead of sweeping backwards
+      if (frac > prev + 0.02) { ring.classList.add('refill'); clearTimeout(ring._refill); ring._refill = setTimeout(() => ring.classList.remove('refill'), 700); }
+      ring.style.setProperty('--left', String(frac));
       ring.classList.toggle('ending', left <= 5);
       ring.title = `New code in ${left} s`;
     }
@@ -222,14 +320,31 @@ function otpRing() {
 async function persist() {
   const r = await api.save(state.items);
   if (!r.ok) { toast(r.error === 'locked' ? 'Vault is locked' : 'Couldn’t save. Try again.'); return false; }
+  requestLogos(); // a new or changed website may need its logo
   return true;
 }
 
 // ---------- lock screen ----------
+let lockSeq = 0; // the newest lock/unlock transition wins
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function showLock() {
-  const st = await api.status();
-  state.firstRun = !st.exists;
+  const seq = ++lockSeq;
+  // Secrets leave memory at once; the window then sinks away before the lock card rises.
   state.items = []; state.selectedId = null; state.draft = null; state.mode = 'view'; state.reveal.clear(); state.query = ''; state.view = 'all'; state.showHistory = false;
+  logos.map.clear();
+  window.fx.closeMenu();
+  const appEl = $('#app');
+  if (!appEl.hidden) {
+    appEl.classList.remove('arrive');
+    appEl.classList.add('leaving');
+    await pause(230);
+    appEl.classList.remove('leaving');
+    if (seq !== lockSeq) return;
+  }
+  const st = await api.status();
+  if (seq !== lockSeq) return;
+  state.firstRun = !st.exists;
+  $('#lock').classList.remove('leaving');
   $('#q').value = '';
   $('#detail').replaceChildren();
   $('#list').replaceChildren();
@@ -305,14 +420,23 @@ function unlocked(items) {
   if (keep.length !== state.items.length) { state.items = keep; persist(); }
   // Older vaults and imports: mark 2FA setup-key fields so they show as live codes.
   for (const it of state.items) { const f = window.otp.otpField(it); if (f && !f.kind) { f.kind = 'otp'; f.label = 'Verification code'; } }
-  $('#lock').hidden = true;
+  // The lock card lifts away while the window arrives.
+  const seq = ++lockSeq;
+  const lockEl = $('#lock');
+  if (!lockEl.hidden) {
+    lockEl.classList.add('leaving');
+    setTimeout(() => { if (seq !== lockSeq) return; lockEl.hidden = true; lockEl.classList.remove('leaving'); }, 300);
+  }
   document.body.classList.remove('lock-mode');
   const app = $('#app');
+  app.classList.remove('leaving');
   app.hidden = false;
   app.classList.remove('arrive'); void app.offsetWidth; app.classList.add('arrive');
   const first = matches()[0];
   state.selectedId = first ? first.it.id : null;
+  state.animateRows = true;
   render();
+  requestLogos();
   $('#q').focus();
   bumpIdle();
 }
@@ -383,12 +507,32 @@ function renderViews() {
     security: hm.size,
     deleted: state.items.length - items.length,
   };
-  $('#views').replaceChildren(...VIEWS.map((v) => h('button', {
+  const views = $('#views');
+  for (const t of [...views.querySelectorAll('.view-tab')]) t.remove(); // the pill stays, so it can glide
+  views.append(...VIEWS.map((v) => h('button', {
     class: 'view-tab', role: 'tab', id: 'view-' + v.id, 'aria-selected': String(state.view === v.id),
     title: `${v.label} (${counts[v.id]})`, onclick: () => setView(v.id),
   }, h('span', { class: 'view-icon' }, icon(v.icon), v.id === 'security' && counts.security ? h('b', { class: 'badge' }, counts.security > 99 ? '99+' : String(counts.security)) : null),
   h('span', { class: 'view-label' }, v.label))));
+  placePill(views, '.view-pill', document.getElementById('view-' + state.view), 'x');
   return counts;
+}
+
+// A pill that glides to the selected element (view tabs, list selection). It stays in the DOM
+// between renders so the browser can transition its transform.
+function placePill(parent, sel, target, axis) {
+  let pill = parent.querySelector(':scope > ' + sel);
+  const fresh = !pill;
+  if (fresh) { pill = h(sel === '.view-pill' ? 'div' : 'li', { class: sel.slice(1), 'aria-hidden': 'true', role: 'presentation' }); parent.prepend(pill); }
+  if (!target || !target.offsetWidth) { pill.style.opacity = '0'; pill.dataset.hidden = '1'; return pill; }
+  const jump = fresh || pill.dataset.hidden === '1' || pill.dataset.jump === '1';
+  pill.classList.toggle('jump', jump);
+  if (axis === 'x') pill.style.width = target.offsetWidth + 'px';
+  pill.style.transform = axis === 'x' ? `translateX(${target.offsetLeft}px)` : `translateY(${target.offsetTop}px)`;
+  pill.style.opacity = '';
+  delete pill.dataset.hidden; delete pill.dataset.jump;
+  if (jump) { void pill.offsetWidth; pill.classList.remove('jump'); }
+  return pill;
 }
 
 async function setView(id) {
@@ -397,6 +541,7 @@ async function setView(id) {
   state.view = id;
   state.showHistory = false;
   state.selectedId = null;
+  state.animateRows = true;
   render();
 }
 
@@ -428,22 +573,31 @@ function renderList() {
     if (res.length && !res.some((r) => r.it.id === state.selectedId)) state.selectedId = res[0].it.id;
     if (!res.length) state.selectedId = null;
   }
-  list.replaceChildren(...res.map(({ it }) => h('li', {
-    class: 'row', role: 'option', id: 'row-' + it.id, 'data-id': it.id,
+  const enter = state.animateRows;
+  state.animateRows = false;
+  const rows = res.map(({ it }, i) => h('li', {
+    class: 'row' + (enter && i < 14 ? ' enter' : ''), role: 'option', id: 'row-' + it.id, 'data-id': it.id,
+    style: enter && i < 14 ? `--i:${i}` : null,
     'aria-selected': String(it.id === state.selectedId),
-    onclick: () => select(it.id),
+    onclick: () => select(it.id, true),
     ondblclick: () => { if (it.deletedAt) return; const l = window.loginLink(it); if (l) openLink(l.url); },
-    oncontextmenu: (e) => { e.preventDefault(); rowMenu(it); },
+    oncontextmenu: (e) => { e.preventDefault(); rowMenu(it, e); },
   }, tile(it), h('div', { class: 'row-text' },
     h('div', { class: 'row-title' }, highlight(it.title, q), it.favorite && state.view !== 'favorites' ? icon('i-star-fill', 'row-star') : null),
-    h('div', { class: 'row-sub' }, rowSub(it))))));
+    h('div', { class: 'row-sub' }, rowSub(it)))));
+  const pill = list.querySelector(':scope > .list-sel');
+  for (const c of [...list.children]) if (c !== pill) c.remove(); // keep the selection pill so it can glide
+  list.append(...rows);
 
   if (!res.length) {
     const [title, text] = v.empty;
-    list.replaceChildren(q
+    list.append(q
       ? h('li', { class: 'empty-list' }, h('strong', {}, 'No results'), `Nothing matches “${q}”.`)
       : h('li', { class: 'empty-list' }, h('strong', {}, title), text));
   }
+  if (enter && pill) pill.dataset.jump = '1';
+  const selPill = placePill(list, '.list-sel', document.getElementById('row-' + state.selectedId), 'y');
+  if (enter && selPill.dataset.hidden !== '1' && !window.fx.reduced()) selPill.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400, delay: 120, fill: 'backwards' });
   if (state.view === 'codes') tickCodes();
   const sel = document.getElementById('row-' + state.selectedId);
   if (sel) {
@@ -459,7 +613,16 @@ function renderList() {
 let lastShownId = null;
 function setTint(item) {
   const name = item ? (item.title || item.website || '').trim() : '';
-  document.documentElement.style.setProperty('--tint', name ? tileColor(item) : '#0a6cff');
+  const color = name ? tintColor(item) : '#0a6cff';
+  document.documentElement.style.setProperty('--tint', color);
+  const [a, b] = document.querySelectorAll('.backdrop .b1');
+  const on = a.classList.contains('off') ? b : a;
+  const off = on === a ? b : a;
+  if (on.dataset.color === color) return;
+  off.style.backgroundColor = color;
+  off.dataset.color = color;
+  off.classList.remove('off');
+  on.classList.add('off');
 }
 
 function renderDetail() {
@@ -468,7 +631,10 @@ function renderDetail() {
   setTint(state.mode !== 'view' ? state.draft : it);
   if (state.mode === 'edit' || state.mode === 'new') return d.replaceChildren(...editView());
   if (!it) return d.replaceChildren(h('div', { class: 'detail-bar drag' }), blankView());
+  const fly = state.flyTile && lastShownId !== it.id;
+  state.flyTile = false;
   d.replaceChildren(...detailView(it));
+  if (fly) window.fx.flyTile(document.querySelector(`#row-${CSS.escape(it.id)} .tile`), d.querySelector('.hero .tile'));
 }
 
 function blankView() {
@@ -500,11 +666,11 @@ function valueRow({ label, value, secret, id, link, copyName }) {
       class: 'mini-btn', title: shown ? 'Hide' : 'Show', 'aria-label': shown ? `Hide ${label}` : `Show ${label}`,
       onclick: (e) => { e.stopPropagation(); shown ? state.reveal.delete(id) : state.reveal.add(id); renderDetail(); },
     }, icon(shown ? 'i-eye-off' : 'i-eye')) : null,
-    !empty ? h('button', { class: 'mini-btn', title: 'Copy', 'aria-label': `Copy ${label}`, onclick: (e) => { e.stopPropagation(); copy(value, secret, copyName || label); } }, icon('i-copy')) : null);
+    !empty ? h('button', { class: 'mini-btn', 'data-copy': '', title: 'Copy', 'aria-label': `Copy ${label}`, onclick: (e) => { e.stopPropagation(); copy(value, secret, copyName || label, e.currentTarget, e.currentTarget.closest('.field-row')); } }, icon('i-copy')) : null);
 
   return h('div', {
     class: 'field-row' + (empty || link ? '' : ' clickable'),
-    onclick: empty || link ? null : () => copy(value, secret, copyName || label),
+    onclick: empty || link ? null : (e) => copy(value, secret, copyName || label, e.currentTarget.querySelector('[data-copy]'), e.currentTarget),
   }, h('div', { class: 'f-label' }, label), valueEl, actions);
 }
 
@@ -545,10 +711,10 @@ function detailView(it) {
   const otpF = window.otp.otpField(it);
   const codeRow = cfg ? h('div', {
     class: 'field-row clickable', 'data-otp': it.id, title: 'Click to copy',
-    onclick: async () => copy(await otpCode(cfg), true, 'Code'),
+    onclick: async (e) => { const row = e.currentTarget; copy(await otpCode(cfg), true, 'Code', row.querySelector('[data-copy]'), row); },
   }, h('div', { class: 'f-label' }, 'Verification code'),
   h('div', { class: 'f-value otp-value' }, otpRing(), h('span', { class: 'otp-code' }, '··· ···')),
-  h('div', { class: 'row-actions' }, h('button', { class: 'mini-btn', title: 'Copy', 'aria-label': 'Copy verification code', onclick: async (e) => { e.stopPropagation(); copy(await otpCode(cfg), true, 'Code'); } }, icon('i-copy')))) : null;
+  h('div', { class: 'row-actions' }, h('button', { class: 'mini-btn', 'data-copy': '', title: 'Copy', 'aria-label': 'Copy verification code', onclick: async (e) => { e.stopPropagation(); const b = e.currentTarget; copy(await otpCode(cfg), true, 'Code', b, b.closest('.field-row')); } }, icon('i-copy')))) : null;
 
   const main = h('div', { class: 'group' },
     valueRow({ label: 'User name', value: it.username, id: 'u', copyName: 'User name' }),
@@ -762,11 +928,12 @@ function updateHeroTile() {
 }
 
 // ---------- actions ----------
-async function select(id) {
+async function select(id, fly) {
   if (id === state.selectedId && state.mode === 'view') return;
   if (state.mode !== 'view' && !(await cancelEdit())) return;
   state.selectedId = id;
   state.reveal.clear();
+  state.flyTile = !!fly; // clicked in the list: the tile flies from the row into the header
   render();
 }
 
@@ -815,11 +982,32 @@ function toggleFavorite(it) {
   return updateItem(it, { favorite: it.favorite ? undefined : true }, it.favorite ? 'Removed from Favorites' : 'Added to Favorites');
 }
 
-async function rowMenu(it) {
+// Right-click (or the Menu key / Shift+F10) on an account. Items that can't be used are left out.
+async function rowMenu(it, e) {
   if (state.mode === 'view' && state.selectedId !== it.id) await select(it.id);
   const link = window.loginLink(it);
   const cfg = otpOf(it);
-  const pick = await api.rowMenu({ hasUser: !!it.username, hasPassword: !!it.password, hasLink: !!link, hasCode: !!cfg, favorite: !!it.favorite, deleted: !!it.deletedAt });
+  const keyboard = !e || (e.clientX === 0 && e.clientY === 0);
+  const row = document.getElementById('row-' + it.id);
+  const items = it.deletedAt ? [
+    it.username && { label: 'Copy User Name', value: 'copy-user' },
+    it.password && { label: 'Copy Password', value: 'copy-password' },
+    'sep',
+    { label: 'Recover', value: 'recover' },
+    { label: 'Delete Now…', value: 'purge', danger: true },
+  ] : [
+    it.username && { label: 'Copy User Name', value: 'copy-user', key: 'Ctrl+Shift+U' },
+    it.password && { label: 'Copy Password', value: 'copy-password', key: 'Ctrl+Shift+C' },
+    cfg && { label: 'Copy Verification Code', value: 'copy-code' },
+    link && { label: 'Open Login Page', value: 'open', key: 'Ctrl+O' },
+    'sep',
+    { label: it.favorite ? 'Remove from Favorites' : 'Add to Favorites', value: 'favorite', key: 'Ctrl+D' },
+    { label: 'Edit', value: 'edit', key: 'Ctrl+E' },
+    'sep',
+    { label: 'Delete…', value: 'delete', key: 'Del', danger: true },
+  ];
+  const at = keyboard && row ? { anchor: row, align: 'start', keyboard: true } : { x: e.clientX, y: e.clientY };
+  const pick = await window.fx.menu(items, { ...at, label: it.title, opener: $('#q') === document.activeElement ? $('#q') : null });
   if (pick === 'copy-user') copy(it.username, false, 'User name');
   if (pick === 'copy-password') copy(it.password, true, 'Password');
   if (pick === 'copy-code' && cfg) copy(await otpCode(cfg), true, 'Code');
@@ -872,6 +1060,7 @@ async function importFlow() {
   if (!(await persist())) { state.items = before; return; }
   state.selectedId = fresh.slice().sort(byTitle)[0].id;
   state.query = ''; $('#q').value = ''; state.view = 'all';
+  state.animateRows = true;
   render();
   toast(`Imported ${fresh.length} ${fresh.length === 1 ? 'account' : 'accounts'}`);
 }
@@ -940,9 +1129,32 @@ async function backupFlow() {
   r.checked = true; r.dispatchEvent(new Event('change'));
 }
 
-async function moreMenu() {
-  const pick = await api.moreMenu();
-  handleCommand(pick);
+async function moreMenu(e) {
+  const btn = $('#moreBtn');
+  if (window.fx.closedBy(btn)) return; // this click closed the open menu
+  const p = await api.appPrefs();
+  const pick = await window.fx.menu([
+    { label: 'Import Passwords…', value: 'import', key: 'Ctrl+I' },
+    { label: 'Export Passwords…', value: 'export', key: 'Ctrl+Shift+E' },
+    'sep',
+    { label: 'Back Up Vault…', value: 'backup' },
+    { label: 'Restore From Backup…', value: 'restore' },
+    'sep',
+    { label: 'Password Generator…', value: 'generator', key: 'Ctrl+G' },
+    { label: 'Connect a Browser…', value: 'browser' },
+    { label: 'Change Master Password…', value: 'change-password' },
+    'sep',
+    { label: 'Quick Search', value: 'quick', key: 'Ctrl+Shift+Space' },
+    p.openAtLogin != null ? { label: 'Open Vault When Windows Starts', value: 'login-item', checked: p.openAtLogin } : null,
+    { label: 'Download Site Logos', value: 'logos', checked: p.logos },
+    { label: 'Check for Updates…', value: 'check-updates' },
+    { label: 'Show Vault File', value: 'show-file' },
+  ], { anchor: btn, align: 'start', keyboard: !!e && e.detail === 0, label: 'More', opener: btn });
+  if (pick === 'quick') api.showQuick();
+  else if (pick === 'login-item') api.setPref('openAtLogin', !p.openAtLogin);
+  else if (pick === 'logos') setLogos(!p.logos);
+  else if (pick === 'show-file') api.showVaultFile();
+  else handleCommand(pick);
 }
 
 function handleCommand(cmd) {
@@ -1145,6 +1357,7 @@ document.addEventListener('keydown', (e) => {
   if ((inSearch || !inField) && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); moveSelection(e.key === 'ArrowDown' ? 1 : -1); return; }
   if (inSearch && e.key === 'Enter' && it) { e.preventDefault(); const l = window.loginLink(it); if (l) openLink(l.url); return; }
   if ((e.key === 'Delete') && !inField && it) { e.preventDefault(); deleteItem(it); return; }
+  if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && (inSearch || !inField) && it) { e.preventDefault(); rowMenu(it, null); return; }
   // Typing anywhere jumps into search.
   if (!inField && !ctrl && !e.altKey && e.key.length === 1) { $('#q').focus(); }
 });
@@ -1167,6 +1380,7 @@ $('#qClear').addEventListener('click', () => { $('#q').value = ''; state.query =
 $('#addBtn').addEventListener('click', async () => { if (state.mode === 'view' || (await cancelEdit())) startNew(); });
 $('#lockBtn').addEventListener('click', lockNow);
 $('#moreBtn').addEventListener('click', moreMenu);
+$('#moreBtn').addEventListener('keydown', (e) => { if (e.key === 'ArrowDown') { e.preventDefault(); moreMenu({ detail: 0 }); } });
 $('#exportForm').addEventListener('submit', exportSubmit);
 $('#changePwForm').addEventListener('submit', changePwSubmit);
 $('#q').addEventListener('focus', () => document.querySelector('.sidebar').classList.add('list-active'));

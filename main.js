@@ -3,7 +3,7 @@
 // Holds the encryption key, reads/writes the encrypted vault file and is the
 // only place that touches the clipboard or opens links in the default browser.
 
-const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -188,6 +188,7 @@ function buildMenu() {
         { label: 'Back Up Vault…', click: () => send('menu', 'backup') },
         { type: 'separator' },
         { label: 'Password Generator…', accelerator: 'CmdOrCtrl+G', click: () => send('menu', 'generator') },
+        { label: 'Connect a Browser…', click: () => send('menu', 'browser') },
         { label: 'Change Master Password…', click: () => send('menu', 'change-password') },
         { label: 'Show Vault File', click: () => shell.showItemInFolder(vaultPath()) },
         { type: 'separator' },
@@ -427,6 +428,7 @@ ipcMain.handle('menu:more', () => new Promise((resolve) => {
     { label: 'Restore From Backup…', click: pick('restore') },
     { type: 'separator' },
     { label: 'Password Generator…', click: pick('generator') },
+    { label: 'Connect a Browser…', click: pick('browser') },
     { label: 'Change Master Password…', click: pick('change-password') },
     { type: 'separator' },
     { label: 'Quick Search', accelerator: HOTKEY, registerAccelerator: false, click: () => showQuick() },
@@ -587,6 +589,44 @@ function setOpenAtLogin(on) {
   if (canOpenAtLogin()) app.setLoginItemSettings({ openAtLogin: !!on, args: ['--hidden'] });
 }
 
+// ---------- Browser extension bridge -------------------------------------------
+let bridge = null;
+function setupBridge() {
+  bridge = require('./bridge')({
+    app, safeStorage, prefs, setPref, sessionItems, copy, otp, nodeHmac,
+    links: require('./src/links.js'),
+    isUnlocked: () => !!session,
+    exists: () => fs.existsSync(vaultPath()),
+    unlock: async (pw) => { const r = await unlock(pw); if (r.ok) send('unlocked-elsewhere', r.items); return r; },
+    onActivity: () => send('activity'),
+    onChange: () => send('bridge', bridgeState()),
+    log: (m) => logUpdate('[browser] ' + m),
+  });
+  bridge.start();
+}
+const bridgeState = () => (bridge ? { ...bridge.state(), clients: bridge.clients() } : { clients: [] });
+
+// The extension's files, copied to a fixed folder the browser can load (and refreshed on updates).
+function extensionFolder() {
+  const target = path.join(app.getPath('userData'), 'Browser Extension');
+  const src = path.join(__dirname, 'browser-extension');
+  fs.mkdirSync(target, { recursive: true });
+  for (const name of fs.readdirSync(src)) {
+    const from = path.join(src, name);
+    if (fs.statSync(from).isDirectory()) {
+      fs.mkdirSync(path.join(target, name), { recursive: true });
+      for (const sub of fs.readdirSync(from)) fs.writeFileSync(path.join(target, name, sub), fs.readFileSync(path.join(from, sub)));
+    } else fs.writeFileSync(path.join(target, name), fs.readFileSync(from));
+  }
+  return target;
+}
+
+ipcMain.handle('bridge:state', () => bridgeState());
+ipcMain.handle('bridge:pair', () => (bridge ? bridge.startPairing() : null));
+ipcMain.handle('bridge:cancel', () => { if (bridge) bridge.cancelPairing(); return true; });
+ipcMain.handle('bridge:remove', (_e, id) => { if (bridge) bridge.remove(String(id)); return bridgeState(); });
+ipcMain.handle('bridge:folder', () => { try { const dir = extensionFolder(); if (!SMOKE) shell.openPath(dir); return dir; } catch (err) { return null; } });
+
 // ---------- Boot -------------------------------------------------------------
 app.setAppUserModelId('local.vault.app');
 
@@ -599,13 +639,14 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
     buildMenu();
     createWindow();
     setupUpdates();
+    setupBridge();
     if (!SMOKE) {
       setupTray();
       createQuick();
       if (!globalShortcut.register(HOTKEY, showQuick)) console.warn('Quick-search hotkey is taken by another app');
     }
     if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme, showQuick, getQuick: () => quick });
-    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick });
+    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge });
   });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { lock(); app.quit(); });

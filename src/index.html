@@ -167,6 +167,33 @@
     </form>
   </dialog>
 
+  <dialog id="browserDlg" class="alert glass browser-alert">
+    <form id="browserForm" method="dialog">
+      <h2>Connect a Browser</h2>
+      <p>Fill logins in Chrome, Edge, Brave or Firefox. Passwords stay in Vault; the browser asks for one only when you fill.</p>
+      <ol class="steps">
+        <li>
+          <strong>Add the Vault extension</strong>
+          <span>Open the browser’s Extensions page, turn on <b>Developer mode</b>, choose <b>Load unpacked</b> and pick the folder Vault opens.</span>
+          <button id="brFolder" type="button" class="btn-secondary">Show Extension Folder</button>
+        </li>
+        <li>
+          <strong>Pair it</strong>
+          <span id="brPairText">Click the Vault icon in the browser’s toolbar and paste this code. It works once, for 10 minutes.</span>
+          <div id="brCodeRow" class="code-row">
+            <output id="brCode" class="pair-code"></output>
+            <button id="brCopy" type="button" class="mini-btn" title="Copy code" aria-label="Copy pairing code"><svg><use href="#i-copy"/></svg></button>
+          </div>
+          <button id="brAgain" type="button" class="btn-secondary" hidden>Pair Another Browser</button>
+        </li>
+      </ol>
+      <div id="brClients" class="br-clients"></div>
+      <div class="alert-actions">
+        <button value="ok" class="btn-primary">Done</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="otp.js"></script>
   <script src="words.js"></script>
   <script src="links.js"></script>

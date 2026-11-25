@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Vault</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true">
+    <defs>
+      <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.6" cy="8.6" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m12.8 12.8 4.4 4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+      <symbol id="i-user" viewBox="0 0 20 20"><circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 16.5c.8-3 3.2-4.6 6-4.6s5.2 1.6 6 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-key" viewBox="0 0 20 20"><circle cx="7" cy="12.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m9.5 10 6-6m-2.4 2.4 1.9 1.9m-3.9.1 1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-timer" viewBox="0 0 20 20"><circle cx="10" cy="11" r="6.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 7.6V11l2.2 1.6M8 2.8h4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 20 20"><path d="M4.5 10h10.5m-4.5-4.5L15 10l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 9V6.8a3 3 0 0 1 6 0V9" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+      <symbol id="i-vault" viewBox="0 0 64 64"><rect x="15" y="27" width="34" height="25" rx="6" fill="#fff"/><path d="M22 27v-5.5a10 10 0 0 1 20 0V27" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="38" r="3.6" fill="#2b5fd9"/><rect x="30.4" y="38" width="3.2" height="7" rx="1.6" fill="#2b5fd9"/></symbol>
+    </defs>
+  </svg>
+
+  <!-- Not paired yet -->
+  <section id="vPair" class="card center" hidden>
+    <div class="app-icon"><svg><use href="#i-vault"/></svg></div>
+    <h1>Connect to Vault</h1>
+    <p>In the Vault app, open <b>•••</b> → <b>Connect a Browser</b> and paste the code it shows.</p>
+    <form id="pairForm" class="stack" autocomplete="off">
+      <input id="pairCode" class="field mono" placeholder="XXXX-XXXX-XXXX-…" aria-label="Pairing code" spellcheck="false">
+      <button id="pairGo" class="btn-primary" type="submit">Connect</button>
+    </form>
+    <p id="pairErr" class="err" role="alert"></p>
+  </section>
+
+  <!-- Vault not running -->
+  <section id="vOffline" class="card center" hidden>
+    <div class="app-icon dim"><svg><use href="#i-vault"/></svg></div>
+    <h1>Vault isn’t running</h1>
+    <p>Open Vault on this PC, then try again. Vault keeps running in the notification area once it’s open.</p>
+    <button id="retry" class="btn-secondary">Try Again</button>
+  </section>
+
+  <!-- Locked -->
+  <section id="vLocked" class="card center" hidden>
+    <div class="app-icon"><svg><use href="#i-lock"/></svg></div>
+    <h1>Vault is locked</h1>
+    <form id="unlockForm" class="pw-field" autocomplete="off">
+      <input id="pw" type="password" class="field" placeholder="Master password" aria-label="Master password" spellcheck="false">
+      <button id="unlockGo" class="round-go" type="submit" aria-label="Unlock"><svg><use href="#i-arrow"/></svg></button>
+    </form>
+    <p id="unlockErr" class="err" role="alert"></p>
+  </section>
+
+  <!-- Unlocked -->
+  <section id="vList" hidden>
+    <div class="search">
+      <svg class="s-icon" aria-hidden="true"><use href="#i-search"/></svg>
+      <input id="q" type="search" placeholder="Search Vault" aria-label="Search Vault" spellcheck="false" autocomplete="off">
+    </div>
+    <div id="siteLine" class="site-line"></div>
+    <ul id="list" class="list" role="listbox" aria-label="Accounts"></ul>
+    <footer class="foot">
+      <span id="status" class="status" role="status" aria-live="polite"></span>
+      <button id="unpair" class="link">Disconnect</button>
+    </footer>
+  </section>
+
+  <script src="links.js"></script>
+  <script src="vault-client.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -59,9 +59,22 @@ Vault isn't code-signed yet, so Windows may say *"Windows protected your PC"* th
 - Export to CSV or JSON, and encrypted backup and restore
 - Light and dark mode, keyboard shortcuts, right-click menus
 
+## Browser extension
+
+Fill logins in Chrome, Edge, Brave or Firefox. The extension keeps no passwords: it asks Vault for one only when you fill.
+
+1. In Vault, open **••• → Connect a Browser** and click **Show Extension Folder**.
+2. **Chrome / Edge / Brave:** open the extensions page (`chrome://extensions`, `edge://extensions`, `brave://extensions`), turn on **Developer mode**, click **Load unpacked** and pick that folder.
+   **Firefox:** open `about:debugging#/runtime/this-firefox` and choose **Load Temporary Add-on…** (pick `manifest.json`). Firefox forgets it on restart unless the extension is signed by Mozilla.
+3. Click the Vault icon in the browser toolbar and paste the code Vault shows.
+
+Then click the Vault icon on any login page (or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>) to fill it. The extension folder is refreshed when Vault updates; the browser picks up the new version when it restarts.
+
+How it stays private: Vault listens only on `127.0.0.1` and only after a browser is paired. Pairing uses a one-time code shown in Vault; every message is encrypted (AES-256-GCM) with a key made from that code, time-stamped and single-use, and requests from web pages are refused. The pairing key is stored with Windows DPAPI. Remove a browser any time in Connect a Browser.
+
 ## Security
 
-- Everything stays on your computer; nothing is sent anywhere. The only network request is the update check against this repository's releases.
+- Everything stays on your computer; nothing is sent anywhere. The only internet request is the update check against this repository's releases. If you connect a browser, Vault also talks to it over 127.0.0.1, which never leaves the PC.
 - The vault file is encrypted with **AES-256-GCM** using a key derived from your master password with **scrypt** (N=2¹⁷, r=8, p=1).
 - The master password is never stored. If you forget it, the vault can't be opened.
 - Copied passwords and codes are cleared from the clipboard after 30 seconds.

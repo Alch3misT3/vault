@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick }) {
+module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick, getBridge }) {
   const root = path.join(__dirname, '..');
   const shots = path.join(root, 'smoke-shots');
   const fx = (n) => path.join(root, 'test-fixtures', n);
@@ -292,6 +292,90 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await qjs(`(() => { document.getElementById('qpw').value = ${JSON.stringify(MASTER)}; document.getElementById('qGo').click(); })()`);
     check('unlocking from quick search unlocks the window', (await waitFor("!document.getElementById('app').hidden")) && (await qWait("!document.getElementById('qSearch').hidden")));
     getQuick().hide();
+
+    // 16. Browser extension: run the extension's own client code against Vault's bridge
+    {
+      const vm = require('vm');
+      const bridge = getBridge();
+      const store = {};
+      const chromeMock = { storage: { local: {
+        get: async (keys) => Object.fromEntries(keys.filter((k) => k in store).map((k) => [k, store[k]])),
+        set: async (o) => { Object.assign(store, o); },
+        remove: async (keys) => { keys.forEach((k) => delete store[k]); },
+      } } };
+      const ctx = vm.createContext({ chrome: chromeMock, crypto: globalThis.crypto, fetch, AbortController, setTimeout, clearTimeout, TextEncoder, TextDecoder, btoa, atob, URL, console, navigator: { userAgent: 'Mozilla/5.0 Chrome/140.0 Safari/537.36 Edg/140.0' } });
+      vm.runInContext(fs.readFileSync(path.join(root, 'browser-extension', 'vault-client.js'), 'utf8'), ctx);
+      const VC = ctx.VaultClient;
+      const err = (p) => p.then(() => 'no error', (e) => e.message);
+
+      check('bridge is off until a browser is paired', !bridge.state().listening);
+      check('extension’s links.js matches the app’s', fs.readFileSync(path.join(root, 'browser-extension', 'links.js'), 'utf8') === fs.readFileSync(path.join(root, 'src', 'links.js'), 'utf8'));
+      await js("browserFlow()");
+      await waitFor("document.getElementById('browserDlg').open && /^[A-Z2-7]{4}(-[A-Z2-7]{4}){7}$/.test(document.getElementById('brCode').textContent)");
+      const code = await js("document.getElementById('brCode').textContent");
+      check('Connect a Browser shows a one-time code', /^[A-Z2-7]{4}(-[A-Z2-7]{4}){7}$/.test(code), code);
+      await wait(300);
+      check('bridge listens on 127.0.0.1 while pairing', bridge.state().listening && bridge.state().pairing);
+      const wrong = code.replace(/^./, (c) => (c === 'A' ? 'B' : 'A'));
+      check('a wrong code is refused', /doesn’t match/.test(await err(VC.pair(wrong))));
+      check('the right code pairs the browser', (await err(VC.pair(code.toLowerCase()))) === 'no error');
+      check('Vault lists the browser as connected', await waitFor("/Microsoft Edge/.test(document.getElementById('brClients').textContent) && !document.getElementById('brAgain').hidden"));
+      await shot('22-connect-browser');
+      check('the code works only once', /Connect a Browser first|didn’t accept/.test(await err(VC.pair(code))));
+      await js("document.getElementById('browserDlg').close()");
+
+      const st = await VC.rpc('status');
+      check('extension sees Vault unlocked', st.unlocked === true, JSON.stringify(st));
+      const lst = await VC.rpc('list', { url: 'https://www.netflix.com/login?nextpage=x' });
+      check('extension suggests Netflix on netflix.com', lst.items.length === 1 && lst.items[0].title === 'Netflix' && lst.items[0].match, JSON.stringify(lst.items.map((i) => i.title)));
+      const gl = await VC.rpc('list', { url: 'https://accounts.google.com/signin' });
+      check('google.com login matches on accounts.google.com', gl.items.some((i) => i.title === 'Google'), JSON.stringify(gl.items.map((i) => i.title)));
+      const srch = await VC.rpc('list', { url: 'https://example.org/', query: 'git' });
+      check('extension search finds GitHub', srch.items.length === 1 && srch.items[0].title === 'GitHub' && srch.items[0].hasCode && !srch.items[0].match);
+      check('lists never include passwords', !JSON.stringify([lst, gl, srch]).includes('gh-Pa55-word'));
+      const login = await VC.rpc('login', { id: srch.items[0].id });
+      check('extension gets the login to fill', login.username === 'dev-user' && login.password === 'gh-Pa55-word');
+      const cd = await VC.rpc('code', { id: srch.items[0].id });
+      check('extension gets the current 2FA code', /^\d{6}$/.test(cd.code));
+      await clipboard.clear();
+      await VC.rpc('copy', { id: srch.items[0].id, what: 'password' });
+      check('extension copy goes through Vault (auto-clears)', (await clipboard.readText()) === 'gh-Pa55-word');
+
+      const port = bridge.state().port;
+      const evil = await fetch(`http://127.0.0.1:${port}/hello`, { headers: { Origin: 'https://evil.example' } });
+      check('web pages are refused', evil.status === 403);
+      const forged = await fetch(`http://127.0.0.1:${port}/rpc`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: store.clientId, iv: 'AAAAAAAAAAAAAAAA', ct: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAA' }) });
+      check('messages without the key are refused', forged.status === 401);
+      // capture one real request and send it again
+      let captured = null;
+      const realFetch = ctx.fetch;
+      ctx.fetch = async (u, opts) => { if (/\/rpc$/.test(u)) captured = opts; return realFetch(u, opts); };
+      await VC.rpc('status');
+      ctx.fetch = realFetch;
+      const replay = await fetch(`http://127.0.0.1:${port}/rpc`, captured);
+      check('a replayed message is refused', replay.status === 401);
+
+      await js('lockNow()');
+      await waitFor("!document.getElementById('lock').hidden");
+      check('locked Vault gives the extension nothing', (await VC.rpc('list', { url: 'https://www.netflix.com/' })).locked === true);
+      check('wrong master password from the extension fails', (await VC.rpc('unlock', { password: 'nope nope' })).ok === false);
+      check('unlocking from the extension unlocks Vault', (await VC.rpc('unlock', { password: MASTER })).ok === true && (await waitFor("!document.getElementById('app').hidden")));
+      const settingsRaw = fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8');
+      check('browser key is stored encrypted (Windows DPAPI)', /"key":"dpapi:/.test(settingsRaw) && !settingsRaw.includes(store.key));
+
+      // Optional: the same in a real Edge window (VAULT_EXT_E2E=1 npm run smoke).
+      if (process.env.VAULT_EXT_E2E) {
+        const { code: code2 } = bridge.startPairing();
+        await require('./ext-e2e')({ code: code2, check, shotsDir: shots, wait, master: MASTER });
+        for (const c of bridge.clients()) if (c.id !== store.clientId) bridge.remove(c.id);
+        bridge.cancelPairing();
+      }
+
+      bridge.remove(bridge.clients()[0].id);
+      check('a removed browser is cut off', /no longer knows|isn’t running/.test(await err(VC.rpc('status'))));
+      await wait(200);
+      check('bridge stops when no browser is paired', !bridge.state().listening);
+    }
 
     // 10. Dark mode
     nativeTheme.themeSource = 'dark';

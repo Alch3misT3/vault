@@ -956,6 +956,7 @@ function handleCommand(cmd) {
   if (cmd === 'change-password') changePwFlow();
   if (cmd === 'check-updates') manualUpdateCheck();
   if (cmd === 'generator') generatorFlow(false);
+  if (cmd === 'browser') browserFlow();
   if (cmd && cmd.startsWith('view:')) setView(cmd.slice(5));
 }
 
@@ -1042,6 +1043,53 @@ function generatorFlow(forEdit) {
     resolve(forEdit ? pw : null);
   }, { once: true }));
 }
+
+// ---------- connect a browser ----------
+let brKnown = 0;
+function renderBrowsers(st) {
+  const list = (st && st.clients) || [];
+  const box = $('#brClients');
+  box.replaceChildren(...(list.length ? [
+    h('div', { class: 'section-label' }, 'Connected'),
+    h('div', { class: 'group' }, list.map((c) => h('div', { class: 'field-row br-row' },
+      h('div', { class: 'f-label' }, c.name),
+      h('div', { class: 'f-value muted' }, 'Since ' + fmtDate(c.added)),
+      h('button', { type: 'button', class: 'btn-plain danger-text', onclick: async () => {
+        if (!(await confirmAlert(`Disconnect ${c.name}?`, 'It can’t fill logins any more until you pair it again.', 'Disconnect', true))) return;
+        renderBrowsers(await api.bridgeRemove(c.id));
+        browserFlow(true);
+      } }, 'Remove')))),
+  ] : []));
+  // A browser just paired while the dialog is open.
+  if (list.length > brKnown && $('#browserDlg').open) {
+    $('#brCodeRow').hidden = true;
+    $('#brAgain').hidden = false;
+    $('#brPairText').textContent = `${list[list.length - 1].name} is connected. Click the Vault icon there to fill logins.`;
+    toast('Browser connected');
+  }
+  brKnown = list.length;
+}
+async function newPairCode() {
+  const r = await api.bridgePair();
+  $('#brCode').textContent = r ? r.code : 'Unavailable';
+  $('#brCodeRow').hidden = false;
+  $('#brAgain').hidden = true;
+  $('#brPairText').textContent = 'Click the Vault icon in the browser’s toolbar and paste this code. It works once, for 10 minutes.';
+}
+async function browserFlow(reopen) {
+  const dlg = $('#browserDlg');
+  const st = await api.bridgeState();
+  brKnown = st.clients.length;
+  renderBrowsers(st);
+  if (reopen) return;
+  await newPairCode();
+  $('#brFolder').onclick = async () => { const dir = await api.bridgeFolder(); toast(dir ? 'Extension folder opened' : 'Couldn’t open the folder'); };
+  $('#brCopy').onclick = () => api.copy($('#brCode').textContent, false).then(() => toast('Code copied'));
+  $('#brAgain').onclick = newPairCode;
+  dlg.showModal();
+  dlg.addEventListener('close', () => api.bridgeCancel(), { once: true });
+}
+api.onBridge(renderBrowsers);
 
 // ---------- change master password ----------
 function changePwFlow() {

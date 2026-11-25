@@ -22,5 +22,11 @@ contextBridge.exposeInMainWorld('vault', {
   onMenu: (fn) => ipcRenderer.on('menu', (_e, cmd) => fn(cmd)),
   onLocked: (fn) => ipcRenderer.on('locked', () => fn()),
   onUnlocked: (fn) => ipcRenderer.on('unlocked-elsewhere', (_e, items) => fn(items)),
+  bridgeState: () => ipcRenderer.invoke('bridge:state'),
+  bridgePair: () => ipcRenderer.invoke('bridge:pair'),
+  bridgeCancel: () => ipcRenderer.invoke('bridge:cancel'),
+  bridgeRemove: (id) => ipcRenderer.invoke('bridge:remove', id),
+  bridgeFolder: () => ipcRenderer.invoke('bridge:folder'),
+  onBridge: (fn) => ipcRenderer.on('bridge', (_e, st) => fn(st)),
   onActivity: (fn) => ipcRenderer.on('activity', () => fn()),
 });

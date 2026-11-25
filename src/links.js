@@ -155,6 +155,8 @@ function brandColor(item) {
   return null;
 }
 
-window.loginLink = loginLink;
-window.brandColor = brandColor;
-window.hostOf = hostOf;
+// Used by the window and, for browser matching, by the main process.
+const linksRoot = typeof window !== 'undefined' ? window : module.exports;
+linksRoot.loginLink = loginLink;
+linksRoot.brandColor = brandColor;
+linksRoot.hostOf = hostOf;

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:;">
+  <title>Vault Quick Search</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="quick.css">
+</head>
+<body class="quick">
+  <svg class="sprite" aria-hidden="true">
+    <defs>
+      <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.6" cy="8.6" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m12.8 12.8 4.4 4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 20 20"><rect x="4.5" y="9" width="11" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 9V6.8a3 3 0 0 1 6 0V9" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+      <symbol id="i-star-fill" viewBox="0 0 20 20"><path d="m10 2.9 2.2 4.6 5 .6-3.7 3.5.9 5-4.4-2.4-4.4 2.4.9-5L2.8 8.1l5-.6Z" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 20 20"><path d="M4.5 10h10.5m-4.5-4.5L15 10l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-check" viewBox="0 0 20 20"><path d="m5 10.5 3.2 3.2L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="q-panel">
+    <!-- Unlocked: search -->
+    <section id="qSearch" hidden>
+      <div class="q-field">
+        <svg class="q-glass" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="qq" type="text" placeholder="Search Vault" aria-label="Search accounts" spellcheck="false" autocomplete="off" role="combobox" aria-controls="qList" aria-expanded="true">
+        <kbd class="q-esc">Esc</kbd>
+      </div>
+      <ul id="qList" class="q-list" role="listbox" aria-label="Accounts"></ul>
+    </section>
+
+    <!-- Locked -->
+    <form id="qLock" class="q-lock" hidden autocomplete="off">
+      <div class="q-lock-icon" aria-hidden="true"><svg><use href="#i-lock"/></svg></div>
+      <div class="q-lock-text">
+        <strong id="qLockTitle">Vault is locked</strong>
+        <span id="qLockHint">Enter your master password to search.</span>
+      </div>
+      <div class="lock-field">
+        <input id="qpw" type="password" placeholder="Master password" aria-label="Master password" spellcheck="false">
+        <button id="qGo" class="round-go" type="submit" aria-label="Unlock"><svg><use href="#i-arrow"/></svg></button>
+      </div>
+      <p id="qErr" class="lock-error" role="alert"></p>
+    </form>
+
+    <footer class="q-foot">
+      <span id="qStatus" class="q-status" role="status" aria-live="polite"></span>
+      <span id="qHints" class="q-hints">
+        <span><kbd>Enter</kbd> password</span>
+        <span><kbd>Shift</kbd><kbd>Enter</kbd> user name</span>
+        <span id="qCodeHint"><kbd>Alt</kbd><kbd>Enter</kbd> code</span>
+        <span><kbd>Ctrl</kbd><kbd>Enter</kbd> open site</span>
+      </span>
+    </footer>
+  </div>
+
+  <script src="links.js"></script>
+  <script src="quick.js"></script>
+</body>
+</html>

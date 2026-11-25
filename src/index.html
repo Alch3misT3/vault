@@ -23,6 +23,15 @@
       <symbol id="i-more" viewBox="0 0 20 20"><circle cx="5" cy="10" r="1.5" fill="currentColor"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/><circle cx="15" cy="10" r="1.5" fill="currentColor"/></symbol>
       <symbol id="i-import" viewBox="0 0 20 20"><path d="M10 3.5v9m-3.5-3.5L10 12.5 13.5 9M4 13.5V15a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 16 15v-1.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-arrow" viewBox="0 0 20 20"><path d="M4.5 10h10.5m-4.5-4.5L15 10l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-list" viewBox="0 0 20 20"><path d="M7.5 5.5h9m-9 4.5h9m-9 4.5h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="4" cy="5.5" r="1.2" fill="currentColor"/><circle cx="4" cy="10" r="1.2" fill="currentColor"/><circle cx="4" cy="14.5" r="1.2" fill="currentColor"/></symbol>
+      <symbol id="i-star" viewBox="0 0 20 20"><path d="m10 2.9 2.2 4.6 5 .6-3.7 3.5.9 5-4.4-2.4-4.4 2.4.9-5L2.8 8.1l5-.6Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+      <symbol id="i-star-fill" viewBox="0 0 20 20"><path d="m10 2.9 2.2 4.6 5 .6-3.7 3.5.9 5-4.4-2.4-4.4 2.4.9-5L2.8 8.1l5-.6Z" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+      <symbol id="i-timer" viewBox="0 0 20 20"><circle cx="10" cy="11" r="6.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 7.6V11l2.2 1.6M8 2.8h4M15.2 5.4l1.1-1.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-shield" viewBox="0 0 20 20"><path d="M10 2.6 4.2 4.8v4.6c0 3.7 2.4 6.6 5.8 8 3.4-1.4 5.8-4.3 5.8-8V4.8Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 6.6v4.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="13.4" r="1" fill="currentColor"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 20 20"><path d="M3.8 5.6h12.4M8 5.6V4.2c0-.6.5-1 1-1h2c.6 0 1 .4 1 1v1.4M5.4 5.6l.7 10.2c.1.8.7 1.4 1.5 1.4h4.8c.8 0 1.4-.6 1.5-1.4l.7-10.2M8.4 8.8v5.4m3.2-5.4v5.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 20 20"><path d="m7.5 5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-sliders" viewBox="0 0 20 20"><path d="M3.5 6h6m4 0h3M3.5 14h3m4 0h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="11.5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8.5" cy="14" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 20 20"><path d="M15.8 9.2A6 6 0 1 0 14 14.3M16 4.5v4.8h-4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-vault" viewBox="0 0 64 64"><rect x="15" y="27" width="34" height="25" rx="6" fill="#fff"/><path d="M22 27v-5.5a10 10 0 0 1 20 0V27" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="38" r="3.6" fill="var(--icon-hole)"/><rect x="30.4" y="38" width="3.2" height="7" rx="1.6" fill="var(--icon-hole)"/></symbol>
     </defs>
   </svg>
@@ -66,6 +75,7 @@
         <input id="q" type="search" placeholder="Search accounts, emails, sites" aria-label="Search" spellcheck="false" autocomplete="off">
         <button id="qClear" class="search-clear" aria-label="Clear search" hidden><svg><use href="#i-clear"/></svg></button>
       </div>
+      <nav id="views" class="views" role="tablist" aria-label="Show"></nav>
       <div id="listMeta" class="list-meta"></div>
       <ul id="list" class="list" role="listbox" aria-label="Accounts" tabindex="-1"></ul>
       <div id="updateBar" class="update-bar" role="status" hidden>
@@ -135,6 +145,30 @@
     </form>
   </dialog>
 
+  <dialog id="genDlg" class="alert glass wide-alert">
+    <form id="genForm" method="dialog" novalidate>
+      <h2>Password Options</h2>
+      <div class="segmented" role="radiogroup" aria-label="Password style">
+        <label><input type="radio" name="gstyle" value="apple" checked><span>Strong</span></label>
+        <label><input type="radio" name="gstyle" value="random"><span>Random</span></label>
+        <label><input type="radio" name="gstyle" value="words"><span>Words</span></label>
+      </div>
+      <div class="gen-preview">
+        <output id="genOut" aria-live="polite"></output>
+        <button id="genAgain" type="button" class="mini-btn" title="Make another" aria-label="Make another"><svg><use href="#i-refresh"/></svg></button>
+      </div>
+      <p id="genDesc"></p>
+      <div id="genLenRow" class="gen-row"><label id="genLenLabel" for="genLen">Length</label><input id="genLen" type="range" min="8" max="64"><span id="genLenVal"></span></div>
+      <label id="genSymRow" class="gen-row gen-check"><input id="genSym" type="checkbox"><span>Include symbols like ! # $ %</span></label>
+      <div class="alert-actions">
+        <button value="cancel" class="btn-secondary" formnovalidate>Cancel</button>
+        <button id="genGo" value="ok" class="btn-primary">Use Password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="otp.js"></script>
+  <script src="words.js"></script>
   <script src="links.js"></script>
   <script src="transfer.js"></script>
   <script src="app.js"></script>

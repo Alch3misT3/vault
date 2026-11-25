@@ -21,4 +21,6 @@ contextBridge.exposeInMainWorld('vault', {
   onUpdate: (fn) => ipcRenderer.on('update', (_e, st) => fn(st)),
   onMenu: (fn) => ipcRenderer.on('menu', (_e, cmd) => fn(cmd)),
   onLocked: (fn) => ipcRenderer.on('locked', () => fn()),
+  onUnlocked: (fn) => ipcRenderer.on('unlocked-elsewhere', (_e, items) => fn(items)),
+  onActivity: (fn) => ipcRenderer.on('activity', () => fn()),
 });

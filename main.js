@@ -3,16 +3,19 @@
 // Holds the encryption key, reads/writes the encrypted vault file and is the
 // only place that touches the clipboard or opens links in the default browser.
 
-const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { otp } = require('./src/otp.js');
 
 // Test/dev switches only exist when running from source, never in the built app.
 const DEV = !app.isPackaged;
 const SHOTS = DEV && process.argv.includes('--screenshots'); // README screenshots, same sandbox as the smoke test
 const SMOKE = DEV && (process.argv.includes('--smoke') || SHOTS);
 const MAKE_ICON = DEV && process.argv.includes('--make-icon');
+const START_HIDDEN = process.argv.includes('--hidden'); // started with Windows: stay in the notification area
+const HOTKEY = 'CommandOrControl+Shift+Space';
 
 // Portable edition (Vault-Portable.exe): keep the data in a "Vault Data" folder
 // right next to the .exe, so the app and its vault travel together on a USB stick.
@@ -89,13 +92,16 @@ function lock() {
 
 // ---------- Clipboard: copied secrets clear themselves -----------------------
 let clipTimer = null;
-function copy(text, isSecret) {
-  clipboard.writeText(String(text));
+// (Electron 45's clipboard calls return Promises.)
+const CLIP_CLEAR_MS = SMOKE ? 1500 : 30_000;
+async function copy(text, isSecret) {
+  await clipboard.writeText(String(text));
   clearTimeout(clipTimer);
   if (isSecret) {
-    clipTimer = setTimeout(() => {
-      if (clipboard.readText() === String(text)) clipboard.clear();
-    }, 30_000);
+    clipTimer = setTimeout(async () => {
+      // Only clear if it's still ours; the user may have copied something else since.
+      if ((await clipboard.readText()) === String(text)) clipboard.clear();
+    }, CLIP_CLEAR_MS);
   }
 }
 
@@ -140,7 +146,18 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'src', 'index.html'));
-  if (!SMOKE) win.once('ready-to-show', () => win.show());
+  if (!SMOKE && !START_HIDDEN) win.once('ready-to-show', () => win.show());
+
+  // Closing the window keeps Vault in the notification area (Quit is in the tray menu and File menu).
+  win.on('close', (e) => {
+    if (quitting || SMOKE || !tray) return;
+    e.preventDefault();
+    win.hide();
+    if (!prefs().trayHintShown) {
+      setPref('trayHintShown', true);
+      tray.displayBalloon({ iconType: 'info', title: 'Vault is still running', content: 'Press Ctrl+Shift+Space anywhere to find a password. To quit, right-click the Vault icon here.' });
+    }
+  });
 
   // Nothing inside the app may navigate away or spawn windows.
   win.webContents.on('will-navigate', (e) => e.preventDefault());
@@ -170,11 +187,12 @@ function buildMenu() {
         { label: 'Export Passwords…', accelerator: 'CmdOrCtrl+Shift+E', click: () => send('menu', 'export') },
         { label: 'Back Up Vault…', click: () => send('menu', 'backup') },
         { type: 'separator' },
+        { label: 'Password Generator…', accelerator: 'CmdOrCtrl+G', click: () => send('menu', 'generator') },
         { label: 'Change Master Password…', click: () => send('menu', 'change-password') },
         { label: 'Show Vault File', click: () => shell.showItemInFolder(vaultPath()) },
         { type: 'separator' },
         { label: 'Lock Vault', accelerator: 'CmdOrCtrl+L', click: () => { lock(); send('locked'); } },
-        { role: 'quit' },
+        { label: 'Quit Vault', accelerator: 'CmdOrCtrl+Q', click: () => { quitting = true; app.quit(); } },
       ],
     },
     { role: 'editMenu' },
@@ -265,7 +283,7 @@ function setupUpdates() {
 ipcMain.handle('update:check', () => checkForUpdates());
 ipcMain.handle('update:state', () => ({ ...update }));
 ipcMain.handle('update:install', () => {
-  if (update.status === 'ready' && autoUpdater) { lock(); autoUpdater.quitAndInstall(true, true); return true; }
+  if (update.status === 'ready' && autoUpdater) { lock(); quitting = true; autoUpdater.quitAndInstall(true, true); return true; }
   if (update.status === 'available' && update.url) { openUrl(update.url); return true; }
   return false;
 });
@@ -282,7 +300,9 @@ ipcMain.handle('vault:create', async (_e, password) => {
   return { ok: true, items: [] };
 });
 
-ipcMain.handle('vault:unlock', async (_e, password) => {
+ipcMain.handle('vault:unlock', (_e, password) => unlock(password));
+
+async function unlock(password) {
   if (typeof password !== 'string') return { ok: false, error: 'wrong' };
   // Gentle back-off after repeated wrong guesses.
   if (failedAttempts > 3) await new Promise((r) => setTimeout(r, Math.min(8000, 500 * 2 ** (failedAttempts - 4))));
@@ -301,7 +321,14 @@ ipcMain.handle('vault:unlock', async (_e, password) => {
     failedAttempts++;
     return { ok: false, error: 'wrong' };
   }
-});
+}
+
+// The decrypted vault as last saved by the window (the quick-search panel reads it from here).
+function sessionItems() {
+  if (!session) return null;
+  try { return decrypt(session.key, readFile()).items || []; } catch { return null; }
+}
+const nodeHmac = (alg, key, msg) => new Uint8Array(crypto.createHmac(alg.toLowerCase(), Buffer.from(key)).update(Buffer.from(msg)).digest());
 
 ipcMain.handle('vault:save', (_e, items) => {
   if (!session) return { ok: false, error: 'locked' };
@@ -399,26 +426,39 @@ ipcMain.handle('menu:more', () => new Promise((resolve) => {
     { label: 'Back Up Vault…', click: pick('backup') },
     { label: 'Restore From Backup…', click: pick('restore') },
     { type: 'separator' },
+    { label: 'Password Generator…', click: pick('generator') },
     { label: 'Change Master Password…', click: pick('change-password') },
+    { type: 'separator' },
+    { label: 'Quick Search', accelerator: HOTKEY, registerAccelerator: false, click: () => showQuick() },
+    ...(canOpenAtLogin() ? [{ label: 'Open Vault When Windows Starts', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (m) => setOpenAtLogin(m.checked) }] : []),
     { label: 'Check for Updates…', click: pick('check-updates') },
     { label: 'Show Vault File', click: () => shell.showItemInFolder(vaultPath()) },
   ]).popup({ window: win, callback: () => resolve(picked) });
 }));
 
 ipcMain.handle('vault:lock', () => { lock(); return true; });
-ipcMain.handle('clip:copy', (_e, text, isSecret) => { copy(text, !!isSecret); return true; });
+ipcMain.handle('clip:copy', async (_e, text, isSecret) => { await copy(text, !!isSecret); return true; });
 ipcMain.handle('open:url', (_e, url) => openUrl(url));
 
 // Native right-click menu for a list row.
 ipcMain.handle('menu:row', (_e, opts) => new Promise((resolve) => {
   let picked = null;
-  const t = [
-    { label: 'Copy User Name', enabled: !!opts.hasUser, click: () => (picked = 'copy-user') },
-    { label: 'Copy Password', enabled: !!opts.hasPassword, click: () => (picked = 'copy-password') },
-    { label: 'Open Login Page', enabled: !!opts.hasLink, click: () => (picked = 'open') },
+  const p = (v) => () => (picked = v);
+  const t = opts.deleted ? [
+    { label: 'Copy User Name', enabled: !!opts.hasUser, click: p('copy-user') },
+    { label: 'Copy Password', enabled: !!opts.hasPassword, click: p('copy-password') },
     { type: 'separator' },
-    { label: 'Edit', click: () => (picked = 'edit') },
-    { label: 'Delete…', click: () => (picked = 'delete') },
+    { label: 'Recover', click: p('recover') },
+    { label: 'Delete Now…', click: p('purge') },
+  ] : [
+    { label: 'Copy User Name', enabled: !!opts.hasUser, click: p('copy-user') },
+    { label: 'Copy Password', enabled: !!opts.hasPassword, click: p('copy-password') },
+    ...(opts.hasCode ? [{ label: 'Copy Verification Code', click: p('copy-code') }] : []),
+    { label: 'Open Login Page', enabled: !!opts.hasLink, click: p('open') },
+    { type: 'separator' },
+    { label: opts.favorite ? 'Remove from Favorites' : 'Add to Favorites', click: p('favorite') },
+    { label: 'Edit', click: p('edit') },
+    { label: 'Delete…', click: p('delete') },
   ];
   Menu.buildFromTemplate(t).popup({ window: win, callback: () => resolve(picked) });
 }));
@@ -426,20 +466,147 @@ ipcMain.handle('menu:row', (_e, opts) => new Promise((resolve) => {
 powerMonitor.on('lock-screen', () => { if (session) { lock(); send('locked'); } });
 powerMonitor.on('suspend', () => { if (session) { lock(); send('locked'); } });
 
+// ---------- Quick search (Ctrl+Shift+Space from anywhere) ----------------------
+// A small panel that finds an account and copies its password. It never receives
+// passwords or 2FA secrets: it asks this process to copy them straight to the clipboard.
+let quick = null;
+
+function createQuick() {
+  quick = new BrowserWindow({
+    width: 640, height: 452, show: false, frame: false, resizable: false, maximizable: false, minimizable: false,
+    fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, title: 'Vault Quick Search',
+    backgroundColor: '#00000000', backgroundMaterial: 'acrylic',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-quick.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, devTools: DEV,
+    },
+  });
+  quick.loadFile(path.join(__dirname, 'src', 'quick.html'));
+  quick.webContents.on('will-navigate', (e) => e.preventDefault());
+  quick.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  quick.on('blur', () => { if (!SMOKE) hideQuick(); });
+  quick.on('close', (e) => { if (!quitting) { e.preventDefault(); hideQuick(); } });
+}
+
+function showQuick() {
+  if (!quick || quick.isDestroyed()) createQuick();
+  if (quick.isVisible()) return hideQuick();
+  const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const [w, h] = quick.getSize();
+  quick.setPosition(Math.round(workArea.x + (workArea.width - w) / 2), Math.round(workArea.y + workArea.height * 0.22));
+  const go = () => { quick.webContents.send('quick:show'); if (SMOKE) quick.showInactive(); else { quick.show(); quick.focus(); } };
+  if (quick.webContents.isLoading()) quick.webContents.once('did-finish-load', go); else go();
+}
+function hideQuick() { if (quick && !quick.isDestroyed() && quick.isVisible()) quick.hide(); }
+
+const fromQuick = (e) => quick && !quick.isDestroyed() && e.sender === quick.webContents;
+const quickItem = (id) => (sessionItems() || []).find((x) => x.id === id && !x.deletedAt);
+
+ipcMain.handle('quick:list', (e) => {
+  if (!fromQuick(e)) return null;
+  const items = sessionItems();
+  if (!items) return { locked: true, exists: fs.existsSync(vaultPath()) };
+  send('activity');
+  return {
+    locked: false,
+    items: items.filter((x) => !x.deletedAt).map((x) => ({
+      id: x.id, title: x.title, username: x.username, website: x.website, favorite: !!x.favorite,
+      hasPassword: !!x.password, hasCode: !!otp.otpField(x),
+    })),
+  };
+});
+ipcMain.handle('quick:unlock', async (e, password) => {
+  if (!fromQuick(e)) return { ok: false };
+  if (session) return { ok: true };
+  const r = await unlock(password);
+  if (r.ok) send('unlocked-elsewhere', r.items);
+  return { ok: r.ok, error: r.error };
+});
+ipcMain.handle('quick:copy', async (e, id, what) => {
+  if (!fromQuick(e)) return { ok: false };
+  const it = quickItem(id);
+  if (!it) return { ok: false };
+  send('activity');
+  if (what === 'username' && it.username) { await copy(it.username, false); return { ok: true }; }
+  if (what === 'password' && it.password) { await copy(it.password, true); return { ok: true }; }
+  if (what === 'code') {
+    const f = otp.otpField(it);
+    const cfg = f && otp.parse(f.value);
+    if (cfg) { await copy(await otp.code(cfg, nodeHmac), true); return { ok: true }; }
+  }
+  return { ok: false };
+});
+// The current code for one account (shown on the selected row), not the secret behind it.
+ipcMain.handle('quick:code', async (e, id) => {
+  if (!fromQuick(e)) return null;
+  const it = quickItem(id);
+  const f = it && otp.otpField(it);
+  const cfg = f && otp.parse(f.value);
+  if (!cfg) return null;
+  return { code: otp.pretty(await otp.code(cfg, nodeHmac)), left: otp.remaining(cfg), period: cfg.period };
+});
+ipcMain.handle('quick:open', (e, url) => fromQuick(e) && openUrl(url));
+ipcMain.handle('quick:hide', (e) => { if (fromQuick(e)) hideQuick(); });
+ipcMain.handle('quick:main', (e) => { if (fromQuick(e)) { hideQuick(); showMain(); } });
+
+// ---------- Notification area: Vault keeps running so the hotkey works ---------
+let tray = null;
+let quitting = false;
+app.on('before-quit', () => { quitting = true; });
+
+function showMain() {
+  if (!win || win.isDestroyed()) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+// Small preferences file (not secret): e.g. whether the tray hint was shown.
+const prefsPath = () => path.join(app.getPath('userData'), 'settings.json');
+function prefs() { try { return JSON.parse(fs.readFileSync(prefsPath(), 'utf8')); } catch { return {}; } }
+function setPref(k, v) { try { fs.writeFileSync(prefsPath(), JSON.stringify({ ...prefs(), [k]: v })); } catch {} }
+
+function setupTray() {
+  const img = nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png')).resize({ width: 16, height: 16 });
+  tray = new Tray(img);
+  tray.setToolTip('Vault');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Vault', click: showMain },
+    { label: 'Quick Search', accelerator: HOTKEY, registerAccelerator: false, click: showQuick },
+    { type: 'separator' },
+    { label: 'Lock Vault', click: () => { lock(); send('locked'); } },
+    { label: 'Quit Vault', click: () => { quitting = true; app.quit(); } },
+  ]));
+  tray.on('click', showMain);
+}
+
+// Start with Windows (installed app only; a portable copy may be on a USB stick that isn't there).
+const canOpenAtLogin = () => app.isPackaged && !PORTABLE_DIR;
+function setOpenAtLogin(on) {
+  if (canOpenAtLogin()) app.setLoginItemSettings({ openAtLogin: !!on, args: ['--hidden'] });
+}
+
 // ---------- Boot -------------------------------------------------------------
 app.setAppUserModelId('local.vault.app');
 
 if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.on('second-instance', () => showMain());
   app.whenReady().then(async () => {
     if (MAKE_ICON) return require('./scripts/make-icon')(app, BrowserWindow);
     buildMenu();
     createWindow();
     setupUpdates();
-    if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme });
-    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO });
+    if (!SMOKE) {
+      setupTray();
+      createQuick();
+      if (!globalShortcut.register(HOTKEY, showQuick)) console.warn('Quick-search hotkey is taken by another app');
+    }
+    if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme, showQuick, getQuick: () => quick });
+    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick });
   });
+  app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { lock(); app.quit(); });
 }

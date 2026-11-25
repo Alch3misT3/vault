@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO }) {
+module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick }) {
   const root = path.join(__dirname, '..');
   const shots = path.join(root, 'smoke-shots');
   const fx = (n) => path.join(root, 'test-fixtures', n);
@@ -110,7 +110,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
       const set = (id, v) => { const el = document.getElementById(id); el.value = v; el.dispatchEvent(new Event('input')); };
       set('f-title', 'Twitch'); set('f-user', 'streamer@example.com'); set('f-web', 'twitch.tv');
       document.querySelector('[aria-label="Suggest a strong password"]').click();
-      document.querySelector('.add-row').click();
+      document.getElementById('addField').click();
     })()`);
     await js(`(() => {
       const lab = document.querySelector('[data-field="0"]'); lab.value = 'Stream key'; lab.dispatchEvent(new Event('input'));
@@ -181,6 +181,118 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("showUpdate({ status: 'latest' })");
     check('update banner hides when up to date', await js("document.getElementById('updateBar').hidden"));
 
+    // 10. Favorites
+    const live = () => js('window.__vaultState.items.filter(i => !i.deletedAt).length');
+    const byName = (n) => `window.__vaultState.items.find(i => i.title === ${JSON.stringify(n)})`;
+    await js("setView('all')");
+    await js(`toggleFavorite(${byName('Steam')})`);
+    await waitFor(`${byName('Steam')}.favorite === true`);
+    check('star pins Steam to the top of All', await js("/Steam/.test(document.querySelector('#list .row .row-title').textContent) && !!document.querySelector('#list .row .row-star')"));
+    await js("setView('favorites')");
+    check('Favorites view lists only starred accounts', await js("document.querySelectorAll('#list .row').length === 1 && document.getElementById('view-favorites').getAttribute('aria-selected') === 'true'"));
+
+    // 11. Verification codes (2FA): GitHub came from Apple with an otpauth link
+    const { otp } = require('../src/otp.js');
+    const nodeHmac = (alg, key, msg) => new Uint8Array(require('crypto').createHmac(alg.toLowerCase(), Buffer.from(key)).update(Buffer.from(msg)).digest());
+    await js("setView('codes')");
+    check('Codes view lists GitHub', await js("document.querySelectorAll('#list .row').length === 1 && /GitHub/.test(document.querySelector('#list .row-title').textContent)"));
+    await waitFor("/^\\d{3} \\d{3}$/.test((document.querySelector('.detail .otp-code') || {}).textContent || '')", 4000);
+    const shown = await js("document.querySelector('.detail .otp-code').textContent.replace(' ', '')");
+    const expected = await otp.code(otp.parse('otpauth://totp/GitHub:dev-user?secret=JBSWY3DPEHPK3PXP'), nodeHmac);
+    const expected2 = await otp.code(otp.parse('JBSWY3DPEHPK3PXP'), nodeHmac, Date.now() - 1500);
+    check('GitHub shows the right 6-digit code', shown === expected || shown === expected2, `${shown} vs ${expected}`);
+    await shot('15-codes-view');
+
+    // set one up by hand: wrong key is refused, right key works
+    await js("setView('all')");
+    await js(`select(${byName('Twitch')}.id)`);
+    await js(`startEdit(${byName('Twitch')})`);
+    await js("document.getElementById('otpSetup').click()");
+    await waitFor("!!document.getElementById('f-otp')");
+    await js(`(() => { const el = document.getElementById('f-otp'); el.value = 'not a key!'; el.dispatchEvent(new Event('input')); })()`);
+    await js('saveEdit()');
+    check('invalid setup key is refused', await js("state.mode === 'edit' && document.getElementById('f-otp').classList.contains('field-error')"));
+    await js(`(() => { const el = document.getElementById('f-otp'); el.value = 'jbsw y3dp ehpk 3pxp'; el.dispatchEvent(new Event('input')); })()`);
+    // 12. Password history: change Twitch's password in the same edit
+    const oldTwitchPw = await js(`${byName('Twitch')}.password`);
+    await js(`(() => { const el = document.getElementById('f-pw'); el.value = 'brand-new-Pass-42x'; el.dispatchEvent(new Event('input')); })()`);
+    await shot('16-edit-otp-setup');
+    await js('saveEdit()');
+    await waitFor("state.mode === 'view'");
+    const tw = JSON.parse(await js(`JSON.stringify(${byName('Twitch')})`));
+    check('verification code saved on Twitch', tw.fields.some((f) => f.kind === 'otp' && f.value === 'jbsw y3dp ehpk 3pxp'));
+    check('old password kept in history', tw.history && tw.history.length === 1 && tw.history[0].value === oldTwitchPw && tw.pwChangedAt > Date.now() - 60000, JSON.stringify(tw.history));
+    await js("state.showHistory = true; renderDetail()");
+    check('history shows in the account', await js("/1 previous password/.test(document.querySelector('.disclosure').textContent) && document.querySelectorAll('.disclosure ~ .field-row').length === 1"));
+    await shot('17-history');
+
+    // 13. Password health
+    await js(`(async () => { const it = ${byName('Discord')}; it.password = 'Summer2024!'; const g = ${byName('Google')}; g.password = 'tvqmzk-Hrw4nb-pxcyad'; const n = window.__vaultState.items.find(i => /Netflix/.test(i.title)); n.password = 'tvqmzk-Hrw4nb-pxcyad'; window.__vaultState.items = window.__vaultState.items.slice(); await persist(); render(); })()`);
+    await js("setView('security')");
+    const sec = await js("[...document.querySelectorAll('#list .row')].map(r => r.textContent).join(' | ')");
+    check('Security finds the weak and the reused passwords', /Discord.*Weak password/.test(sec) && /Google.*Reused on 2/.test(sec) && /Netflix.*Reused on 2/.test(sec), sec);
+    check('Security badge counts the accounts', await js("+document.querySelector('#view-security .badge').textContent >= 3"));
+    check('strong generated passwords are not flagged', !/Twitch/.test(sec), sec);
+    await js(`select(${byName('Google')}.id)`);
+    await shot('18-security');
+    check('reused warning names the other account', await js("/Also used for Netflix/.test(document.querySelector('.notice.warn').textContent)"));
+
+    // 14. Password generator options
+    await js("localStorage.removeItem('vault.gen')");
+    const gen = (style, extra = '') => js(`(() => { const s = { ...genSettings(), style: ${JSON.stringify(style)} ${extra} }; return generatePassword(s); })()`);
+    const words = await gen('words', ', words: 5');
+    check('word passwords: 5 words, a capital and a number', words.split('-').length === 5 && /[A-Z]/.test(words) && /\d/.test(words), words);
+    const rand = await gen('random', ', length: 32, symbols: true');
+    check('random passwords: length 32 with every kind of character', rand.length === 32 && /[a-z]/.test(rand) && /[A-Z]/.test(rand) && /\d/.test(rand) && /[^A-Za-z0-9]/.test(rand), rand);
+    await js("generatorFlow(false); true");
+    check("options dialog opens", await js("document.getElementById('genDlg').open"));
+    await js(`(() => { const r = document.querySelector('#genForm input[value="words"]'); r.checked = true; r.dispatchEvent(new Event('change')); })()`);
+    check('options dialog previews a word password', await js("document.getElementById('genOut').textContent.split('-').length === 5 && !document.getElementById('genLenRow').hidden && document.getElementById('genSymRow').hidden"));
+    await shot('19-generator');
+    await js("document.getElementById('genDlg').close()");
+    check('closing it without choosing copies nothing', !(await js("/Password copied/.test(document.getElementById('toast').textContent) && document.getElementById('toast').classList.contains('show')")));
+
+    // 15. Quick search panel (Ctrl+Shift+Space)
+    showQuick();
+    // The panel is a Windows acrylic window, which capturePage can't grab: photograph the real screen instead.
+    const quickShot = async (name) => {
+      try {
+        const { screen } = require('electron');
+        const q = getQuick(); const b = q.getBounds(); const f = screen.getDisplayMatching(b).scaleFactor;
+        q.setAlwaysOnTop(true, 'screen-saver'); q.showInactive(); await wait(700);
+        require('child_process').execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'screen-shot.ps1'), String(Math.round(b.x * f)), String(Math.round(b.y * f)), String(Math.round(b.width * f)), String(Math.round(b.height * f)), path.join(shots, name + '.png')]);
+      } catch (e) { console.log('quick screenshot skipped:', e.message); }
+    };
+    const qjs = (code) => getQuick().webContents.executeJavaScript(code);
+    const qWait = async (code, ms = 6000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await qjs(code)) return true; } catch {} await wait(80); } return false; };
+    check('quick search opens with every account', await qWait(`window.__quick && window.__quick.items.length === ${await live()}`));
+    await qjs(`(() => { const el = document.getElementById('qq'); el.value = 'git'; el.dispatchEvent(new Event('input')); })()`);
+    check('quick search finds GitHub', await qWait("/GitHub/.test(document.querySelector('.q-row[aria-selected=\"true\"]').textContent)"));
+    await qWait("!!document.querySelector('.q-code-num')", 3000);
+    await shot('20-quick-main-window');
+    await quickShot('20-quick-search');
+    await clipboard.clear();
+    await qjs("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))");
+    await wait(300);
+    const c1 = await clipboard.readText();
+    check('Enter copies the password', c1 === 'gh-Pa55-word', c1);
+    await qjs("document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', altKey: true, bubbles: true }))");
+    await wait(300);
+    const c2 = await clipboard.readText();
+    check('Alt+Enter copies the 2FA code', /^\d{6}$/.test(c2), c2);
+    await wait(1900);
+    check('copied secrets are cleared from the clipboard afterwards', (await clipboard.readText()) === '');
+    check('quick panel never receives secrets', await qjs("!JSON.stringify(window.__quick.items).includes('gh-Pa55-word') && !JSON.stringify(window.__quick.items).includes('JBSWY3DP')"));
+    // locked: unlocking in the panel unlocks the window too
+    await js('lockNow()');
+    await waitFor("!document.getElementById('lock').hidden");
+    showQuick(); showQuick(); // close and reopen
+    check('quick search asks for the master password when locked', await qWait("!document.getElementById('qLock').hidden"));
+    await quickShot('21-quick-locked');
+    await qjs(`(() => { document.getElementById('qpw').value = ${JSON.stringify(MASTER)}; document.getElementById('qGo').click(); })()`);
+    check('unlocking from quick search unlocks the window', (await waitFor("!document.getElementById('app').hidden")) && (await qWait("!document.getElementById('qSearch').hidden")));
+    getQuick().hide();
+
     // 10. Dark mode
     nativeTheme.themeSource = 'dark';
     await js("select(window.__vaultState.items.find(i => i.title === 'Twitch').id)");
@@ -191,8 +303,20 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("deleteItem(window.__vaultState.items.find(i => i.title === 'Twitch'))");
     await shot('13-dark-delete-alert');
     await js("document.getElementById('alertOk').click()");
-    await waitFor('window.__vaultState.items.length === 10');
-    check('delete removes account', (await count()) === 10);
+    await waitFor("window.__vaultState.items.filter(i => !i.deletedAt).length === 10");
+    check('delete moves the account to Recently Deleted', (await live()) === 10 && (await count()) === 11);
+    await js("setView('deleted')");
+    check('Recently Deleted lists it with days left', await js("/Twitch/.test(document.querySelector('#list .row').textContent) && /30 days left/.test(document.querySelector('#list .row').textContent)"));
+    await shot('13b-recently-deleted');
+    await js(`recoverItem(${byName('Twitch')})`);
+    await waitFor(`!${byName('Twitch')}.deletedAt`);
+    check('Recover brings it back', (await live()) === 11);
+    await js(`updateItem(${byName('Twitch')}, { deletedAt: Date.now() - 31 * 86400000 })`);
+    await js('lockNow()');
+    await waitFor("!document.getElementById('lock').hidden");
+    await js(`(() => { const el = document.getElementById('pw1'); el.value = ${JSON.stringify(MASTER)}; el.dispatchEvent(new Event('input')); document.getElementById('unlockGo').click(); })()`);
+    await waitFor("!document.getElementById('app').hidden");
+    check('accounts deleted over 30 days ago are removed for good', (await count()) === 10 && !(await js(`!!${byName('Twitch')}`)));
     nativeTheme.themeSource = 'light';
     await js("lockNow()");
     await waitFor("!document.getElementById('lock').hidden");

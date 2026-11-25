@@ -75,6 +75,9 @@ function makeItem(p) {
     id: uid(), title, website, username: (p.username || '').trim(), password: p.password || '',
     fields: (p.fields || []).filter((f) => f.value !== '' && f.value != null),
     notes: (p.notes || '').trim(), createdAt: now, updatedAt: now,
+    // Vault's own JSON export keeps these too.
+    ...(p.favorite ? { favorite: true } : {}),
+    ...(Array.isArray(p.history) && p.history.length ? { history: p.history.filter((x) => x && x.value).slice(0, 10) } : {}),
   };
 }
 
@@ -99,7 +102,7 @@ function fromCSV(text) {
   for (const r of rows.slice(1)) {
     const get = (k) => (pick[k] != null ? (r[pick[k]] || '') : '');
     const fields = [];
-    if (get('totp')) fields.push({ id: uid(), label: 'One-time code (2FA) secret', value: get('totp'), secret: true });
+    if (get('totp')) fields.push({ id: uid(), label: 'Verification code', value: get('totp'), secret: true, kind: 'otp' });
     if (get('fields')) {
       for (const line of get('fields').split(/\r?\n/)) {
         const m = line.match(/^([^:]+):\s?(.*)$/);
@@ -129,7 +132,7 @@ function fromJSON(text) {
     return data.items.filter((x) => x.type === 1 || x.login || x.notes).map((x) => {
       const login = x.login || {};
       const fields = [];
-      if (login.totp) fields.push({ id: uid(), label: 'One-time code (2FA) secret', value: login.totp, secret: true });
+      if (login.totp) fields.push({ id: uid(), label: 'Verification code', value: login.totp, secret: true, kind: 'otp' });
       for (const f of x.fields || []) if (f.value) fields.push({ id: uid(), label: f.name || 'Field', value: String(f.value), secret: f.type === 1 || looksSecret(f.name || '') });
       return makeItem({
         title: x.name, website: (login.uris && login.uris[0] && login.uris[0].uri) || '',
@@ -158,7 +161,7 @@ function toCSV(items) {
   const head = ['Title', 'URL', 'Username', 'Password', 'Notes', 'OTPAuth'];
   const lines = [head.join(',')];
   for (const it of items) {
-    const otp = (it.fields || []).find((f) => /otp|2fa|one-time/i.test(f.label));
+    const otp = window.otp.otpField(it) || (it.fields || []).find((f) => /otp|2fa|one-time/i.test(f.label));
     const extra = (it.fields || []).filter((f) => f !== otp).map((f) => `${f.label}: ${f.value}`);
     const notes = [it.notes, ...extra].filter(Boolean).join('\n');
     const url = it.website ? (window.hostOf(it.website) ? window.hostOf(it.website).href : it.website) : '';

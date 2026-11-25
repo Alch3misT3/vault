@@ -47,9 +47,14 @@ Vault isn't code-signed yet, so Windows may say *"Windows protected your PC"* th
 ## Features
 
 - Instant search across names, emails, websites and notes
+- **Quick search from anywhere**: press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd> in any app, type a few letters and press <kbd>Enter</kbd> to copy the password (<kbd>Shift</kbd>+<kbd>Enter</kbd> user name, <kbd>Alt</kbd>+<kbd>Enter</kbd> 2FA code, <kbd>Ctrl</kbd>+<kbd>Enter</kbd> open the site). Vault keeps running in the notification area when you close the window.
+- **Verification codes (2FA)**: paste a site's setup key and Vault shows the live 6-digit code, like an authenticator app
+- **Security**: flags weak, reused and year-old passwords, with a button to the site's login page to change them
+- **Favorites** pinned to the top, and **Recently Deleted**: deleted accounts can be recovered for 30 days
+- **Password history**: the last 10 passwords of each account are kept when you change it
 - User name, password, website, notes, plus your own extra fields (tokens, PINs, recovery codes) that can be hidden like passwords
 - Login links made automatically: type `netflix.com` or just "Netflix" and **Open Login Page** opens the sign-in page in your default browser
-- Strong password suggestions (`xkvbqe-Tmwz4h-pnrcdu` style)
+- Password generator: Apple-style (`xkvbqe-Tmwz4h-pnrcdu`), fully random (length and symbols), or easy-to-type words
 - Import from Apple Passwords, Chrome/Edge, Firefox, Bitwarden (CSV/JSON), 1Password, LastPass, Proton Pass, KeePass, Dashlane
 - Export to CSV or JSON, and encrypted backup and restore
 - Light and dark mode, keyboard shortcuts, right-click menus
@@ -59,7 +64,8 @@ Vault isn't code-signed yet, so Windows may say *"Windows protected your PC"* th
 - Everything stays on your computer; nothing is sent anywhere. The only network request is the update check against this repository's releases.
 - The vault file is encrypted with **AES-256-GCM** using a key derived from your master password with **scrypt** (N=2¹⁷, r=8, p=1).
 - The master password is never stored. If you forget it, the vault can't be opened.
-- Copied passwords are cleared from the clipboard after 30 seconds.
+- Copied passwords and codes are cleared from the clipboard after 30 seconds.
+- The quick-search panel never sees your passwords or 2FA keys: it asks the main app to copy them straight to the clipboard.
 - Vault locks after 5 minutes of inactivity, and when Windows locks or sleeps.
 - The app runs with context isolation, a sandboxed renderer, a strict Content Security Policy, and hardened Electron fuses.
 
@@ -77,3 +83,5 @@ Releasing a new version: raise `version` in `package.json`, then run `.\scripts\
 ## Credits
 
 Inter typeface by Rasmus Andersson, used under the SIL Open Font License 1.1 (see `src/fonts/OFL-Inter.txt`).
+
+Word passwords use the [EFF Short Wordlist](https://www.eff.org/dice) by the Electronic Frontier Foundation, CC BY 3.0 US.

@@ -1,0 +1,66 @@
+/* Quick search panel. The window itself is Windows acrylic, so the page only adds a light tint. */
+html, body.quick { background: transparent; }
+body.quick { height: 100%; overflow: hidden; }
+.q-panel {
+  position: fixed; inset: 0; display: flex; flex-direction: column;
+  background: color-mix(in srgb, var(--glass-strong) 72%, transparent);
+  border: 1px solid var(--material-edge);
+  box-shadow: inset 0 1px 0 var(--rim-1);
+  overflow: hidden;
+}
+#qSearch { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#qSearch[hidden], .q-lock[hidden] { display: none; }
+
+.q-field { position: relative; flex: none; padding: 14px 16px 10px; }
+.q-field input {
+  width: 100%; height: 46px; border-radius: 16px; padding: 0 64px 0 46px;
+  font-size: 18px; font-weight: 500; letter-spacing: -0.01em;
+  background: var(--field); border: 1px solid transparent;
+}
+.q-field input::placeholder { color: var(--placeholder); }
+.q-field input:focus { background: var(--field-focus); border-color: var(--accent); box-shadow: 0 0 0 4px var(--ring); }
+.q-glass { position: absolute; left: 31px; top: 28px; width: 19px; height: 19px; color: var(--secondary); pointer-events: none; }
+.q-esc { position: absolute; right: 30px; top: 27px; color: var(--secondary); }
+
+.q-list { list-style: none; margin: 0; padding: 2px 10px 8px; overflow-y: auto; flex: 1; min-height: 0; }
+.q-row {
+  display: grid; grid-template-columns: 34px 1fr auto; gap: 12px; align-items: center;
+  height: 50px; padding: 0 12px 0 9px; border-radius: 14px;
+}
+.q-row[aria-selected="true"] {
+  color: #fff;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-fill) 85%, #fff), var(--accent-fill) 60%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 6px 14px -8px var(--accent-fill);
+}
+.q-text { min-width: 0; }
+.q-title, .q-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-title { font-weight: 600; font-size: 14px; }
+.q-sub { font-size: 12px; color: var(--secondary); }
+.q-row[aria-selected="true"] .q-sub { color: rgba(255, 255, 255, 0.85); }
+.q-title svg.q-star { display: inline-block; width: 11px; height: 11px; margin-left: 5px; vertical-align: -1px; color: #e3a008; }
+.q-row[aria-selected="true"] .q-star { color: inherit; }
+.q-code { display: flex; align-items: baseline; gap: 6px; }
+.q-code-num { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: 0.05em; }
+.q-code-left { font-size: 11px; opacity: .8; font-variant-numeric: tabular-nums; }
+.q-empty { padding: 40px 0; text-align: center; color: var(--secondary); }
+
+.q-lock { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 120px; text-align: center; }
+.q-lock-icon { width: 44px; height: 44px; border-radius: 14px; padding: 10px; color: #fff; margin-bottom: 12px;
+  background: linear-gradient(180deg, #5b97ff 0%, #2b5fd9 100%); box-shadow: 0 8px 18px -6px rgba(43, 95, 217, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.45); }
+.q-lock-text { margin-bottom: 16px; }
+.q-lock-text strong { display: block; font-size: 16px; font-weight: 700; }
+.q-lock-text span { color: var(--secondary); }
+
+.q-foot {
+  flex: none; height: 38px; display: flex; align-items: center; justify-content: center; position: relative;
+  border-top: 1px solid var(--hairline); font-size: 11.5px; color: var(--secondary);
+}
+.q-hints { display: flex; gap: 16px; transition: opacity .2s; }
+.q-hints.dim { opacity: 0; }
+.q-hints kbd + kbd { margin-left: 2px; }
+.q-status {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 12.5px; font-weight: 600; color: var(--label); opacity: 0; transition: opacity .2s; pointer-events: none;
+}
+.q-status.show { opacity: 1; }
+.q-status svg { width: 15px; height: 15px; color: #1d8f47; }

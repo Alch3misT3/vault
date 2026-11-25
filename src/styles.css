@@ -471,3 +471,102 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .update-text strong { font-size: 13px; font-weight: 650; }
 .update-text span { color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .update-bar .btn-primary { height: 28px; padding: 0 13px; font-size: 12.5px; }
+
+/* ---------- Views: All / Favorites / Codes / Security / Deleted ---------- */
+.views {
+  display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; flex: none;
+  margin: -2px 12px 10px; padding: 3px; border-radius: 16px; background: var(--field);
+}
+.view-tab {
+  display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0;
+  padding: 6px 0 4px; border-radius: 13px; color: var(--secondary);
+  transition: background-color .2s, color .2s, box-shadow .2s;
+}
+.view-tab:hover { color: var(--label); }
+.view-tab[aria-selected="true"] {
+  background: var(--field-focus); color: var(--accent);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+.view-icon { position: relative; width: 17px; height: 17px; }
+.view-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge {
+  position: absolute; top: -5px; left: 11px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
+  background: var(--danger-fill); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
+  box-shadow: 0 0 0 2px var(--glass-strong);
+}
+
+.row-title svg.row-star { display: inline-block; width: 11px; height: 11px; margin-left: 5px; vertical-align: -1px; color: #e3a008; }
+.issue-sub { color: var(--danger); font-weight: 500; }
+.issue-sub.old { color: #a86200; }
+.list:focus-within .row[aria-selected="true"] .issue-sub, .sidebar.list-active .row[aria-selected="true"] .issue-sub,
+.list:focus-within .row[aria-selected="true"] .row-star, .sidebar.list-active .row[aria-selected="true"] .row-star { color: inherit; }
+.row-otp { display: inline-flex; align-items: center; gap: 6px; }
+.row-otp .otp-ring { width: 12px; height: 12px; }
+.row-otp .otp-code { font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--label); letter-spacing: 0.04em; }
+.list:focus-within .row[aria-selected="true"] .otp-code, .sidebar.list-active .row[aria-selected="true"] .otp-code { color: #fff; }
+
+/* Verification code countdown ring */
+.otp-ring { flex: none; transform: rotate(-90deg); }
+.otp-ring circle { fill: none; stroke-width: 2.6; }
+.otp-ring .track { stroke: var(--hairline); }
+.otp-ring .left {
+  stroke: var(--accent-fill); stroke-linecap: round; stroke-dasharray: 100;
+  stroke-dashoffset: calc((1 - var(--left, 1)) * 100); transition: stroke-dashoffset .9s linear, stroke .3s;
+}
+.otp-ring.ending .left { stroke: var(--danger-fill); }
+.list:focus-within .row[aria-selected="true"] .otp-ring .left, .sidebar.list-active .row[aria-selected="true"] .otp-ring .left { stroke: #fff; }
+.otp-value { display: flex; align-items: center; gap: 10px; }
+.otp-value .otp-ring { width: 18px; height: 18px; }
+.otp-value .otp-code { font-family: var(--mono); font-size: 19px; font-weight: 600; letter-spacing: 0.05em; font-variant-numeric: tabular-nums; }
+
+/* Detail bar extras */
+.star-btn { width: 32px; padding: 0; }
+.star-btn svg { width: 16px; height: 16px; }
+.star-btn.on { color: #e3a008; }
+.danger-text { color: var(--danger); }
+
+/* Notices (security, recently deleted) */
+.notice {
+  display: grid; grid-template-columns: 20px 1fr; gap: 12px; align-items: start;
+  margin: -8px 0 22px; padding: 13px 16px 13px 14px; border-radius: 18px;
+  background: var(--material); border: 1px solid var(--material-edge);
+  -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%);
+}
+.notice > svg { width: 20px; height: 20px; color: var(--secondary); margin-top: 1px; }
+.notice strong { display: block; font-size: 13px; font-weight: 650; }
+.notice span { display: block; font-size: 12.5px; color: var(--secondary); line-height: 1.45; text-wrap: pretty; }
+.notice .issue + .issue { margin-top: 8px; }
+.notice.warn { background: color-mix(in srgb, var(--danger-fill) 9%, var(--material)); border-color: color-mix(in srgb, var(--danger-fill) 22%, transparent); }
+.notice.warn > svg { color: var(--danger); }
+.notice-btn { height: 28px; margin: 8px 0 0 -8px; font-size: 12.5px; }
+.notice-btn svg { width: 13px; height: 13px; }
+
+/* Password history */
+.disclosure {
+  width: 100%; min-height: 48px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px 0 16px; font-size: 14px; text-align: left; transition: background-color .12s;
+}
+.disclosure:hover { background: var(--hover); }
+.disclosure svg { width: 14px; height: 14px; color: var(--secondary); transition: transform .25s var(--ease); }
+.disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+.disclosure + .field-row::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; border-top: 1px solid var(--hairline); }
+
+/* 2FA setup in edit mode */
+.otp-edit { align-items: start; }
+.otp-edit .f-label { padding-top: 7px; }
+.otp-edit .edit-tools { padding-top: 5px; }
+.otp-edit-main { min-width: 0; }
+.otp-note { font-size: 11.5px; color: var(--secondary); margin: 3px 0 2px; line-height: 1.4; text-wrap: pretty; }
+.in.field-error { border-color: var(--danger); }
+.add-row svg { color: var(--accent); }
+
+/* Password options dialog */
+.gen-preview {
+  display: flex; align-items: center; gap: 6px; text-align: left;
+  margin: 0 0 10px; padding: 8px 6px 8px 14px; border-radius: 14px; background: var(--field);
+}
+#genOut { flex: 1; min-width: 0; min-height: 20px; font-family: var(--mono); font-size: 14px; overflow-wrap: anywhere; user-select: text; line-height: 1.4; }
+.gen-row { display: flex; align-items: center; gap: 10px; margin: 0 4px 14px; font-size: 12px; color: var(--secondary); text-align: left; }
+.gen-row input[type="range"] { flex: 1; accent-color: var(--accent-fill); }
+#genLenVal { min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; color: var(--label); font-weight: 600; }
+.gen-check input { accent-color: var(--accent-fill); margin: 0; }

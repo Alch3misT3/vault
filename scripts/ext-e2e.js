@@ -1,5 +1,5 @@
 'use strict';
-// Real-browser check of the extension (run by the smoke test when VAULT_EXT_E2E=1):
+// Real-browser check of the extension (Edge by default, or VAULT_E2E_BROWSER, e.g. Helium) (run by the smoke test when VAULT_EXT_E2E=1):
 // starts Microsoft Edge with a throw-away profile and the extension loaded, pairs it through the
 // actual popup page, checks the account list, and fills a test login form with the extension's fill code.
 
@@ -8,7 +8,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
+// VAULT_E2E_BROWSER can point at another Chromium browser (e.g. Helium).
+const EDGE = process.env.VAULT_E2E_BROWSER || 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const DBG = 9333;
 
 module.exports = async function extE2E({ code, check, shotsDir, wait, master }) {
@@ -48,7 +49,7 @@ module.exports = async function extE2E({ code, check, shotsDir, wait, master }) 
         }
       } catch {}
     }
-    check('[Edge] extension loads and its background worker starts', !!worker, worker ? worker.url : 'no worker');
+    check('[browser] extension loads and its background worker starts', !!worker, worker ? worker.url : 'no worker');
     if (!worker) return;
     const extId = worker.url.split('/')[2];
 
@@ -61,17 +62,17 @@ module.exports = async function extE2E({ code, check, shotsDir, wait, master }) 
     const pop = await connect(popupTarget.webSocketDebuggerUrl);
     await pop.send('Runtime.enable');
     const asks = await pop.until("!document.getElementById('vPair').hidden");
-    check('[Edge] popup asks to connect at first', asks, asks ? '' : await pop.evaluate("location.href + ' :: ' + document.readyState + ' :: ' + [...document.querySelectorAll('section')].map(s => s.id + '=' + s.hidden).join(',')"));
+    check('[browser] popup asks to connect at first', asks, asks ? await pop.evaluate('navigator.userAgent + " | brands: " + (navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand).join(", ") : "")') : await pop.evaluate("location.href + ' :: ' + document.readyState + ' :: ' + [...document.querySelectorAll('section')].map(s => s.id + '=' + s.hidden).join(',')"));
     await pop.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 470, deviceScaleFactor: 1, mobile: false });
     await pop.shot('30-ext-pair');
     await pop.evaluate(`(() => { document.getElementById('pairCode').value = ${JSON.stringify(code)}; document.getElementById('pairForm').requestSubmit(); })()`);
     const listed = await pop.until("!document.getElementById('vList').hidden", 10000);
     const why = listed ? '' : await pop.evaluate("document.getElementById('pairErr').textContent + ' | ' + document.querySelector('section:not([hidden]) h1, section:not([hidden]) p')?.textContent");
-    check('[Edge] pairing from the popup works (real WebCrypto + 127.0.0.1 fetch)', listed, why);
+    check('[browser] pairing from the popup works (real WebCrypto + 127.0.0.1 fetch)', listed, why);
 
     // 3. Search lists accounts.
     await pop.evaluate(`(() => { const q = document.getElementById('q'); q.value = 'git'; q.dispatchEvent(new Event('input')); })()`);
-    check('[Edge] popup search finds GitHub', await pop.until("/GitHub/.test(document.getElementById('list').textContent)"));
+    check('[browser] popup search finds GitHub', await pop.until("/GitHub/.test(document.getElementById('list').textContent)"));
     await pop.evaluate(`(() => { const q = document.getElementById('q'); q.value = 'e'; q.dispatchEvent(new Event('input')); })()`);
     await pop.until("document.querySelectorAll('#list .row').length > 3");
     await pop.shot('31-ext-list');
@@ -92,13 +93,13 @@ module.exports = async function extE2E({ code, check, shotsDir, wait, master }) 
     const codeSrc = fs.readFileSync(path.join(extDir, 'vault-client.js'), 'utf8').match(/function fillCodeInPage[\s\S]*?\n  }\n/)[0];
     const res = await pg.evaluate(`(${fillSrc})('dev-user', 'gh-Pa55-word')`);
     const vals = await pg.evaluate("[document.getElementById('u').value, document.getElementById('p').value, document.querySelector('[name=search]').value, window.events]");
-    check('[Edge] fill puts user name and password in the right boxes', res && res.filled === 2 && vals[0] === 'dev-user' && vals[1] === 'gh-Pa55-word' && vals[2] === '' && vals[3] >= 2, JSON.stringify(vals));
+    check('[browser] fill puts user name and password in the right boxes', res && res.filled === 2 && vals[0] === 'dev-user' && vals[1] === 'gh-Pa55-word' && vals[2] === '' && vals[3] >= 2, JSON.stringify(vals));
     const cres = await pg.evaluate(`(${codeSrc})('123456')`);
-    check('[Edge] 2FA code goes into the one-time-code box', cres && cres.filled === 1 && (await pg.evaluate("document.getElementById('c').value")) === '123456');
+    check('[browser] 2FA code goes into the one-time-code box', cres && cres.filled === 1 && (await pg.evaluate("document.getElementById('c').value")) === '123456');
     pg.ws.close();
     pop.ws.close();
   } catch (err) {
-    check('[Edge] browser test crashed', false, err && err.stack);
+    check('[browser] browser test crashed', false, err && err.stack);
   } finally {
     try { edge.kill(); } catch {}
     await wait(800);

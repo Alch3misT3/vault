@@ -271,7 +271,7 @@ module.exports = async function motion({ win, js, wait, waitFor, shot, check, cl
       const list = await js('__audit.stop()');
       const moving = [...new Set(list.filter((a) => a.props.some((p) => p === 'transform' || p === 'translate' || p === 'scale')).map((a) => a.name))];
       const fades = list.filter((a) => a.props.includes('opacity')).length;
-      check('reduced motion: nothing slides or scales, only short fades', !moving.length && fades > 0 && opened && !(await js("!!document.querySelector('.tile-ghost')")), moving.join(', '));
+      check('reduced motion: nothing slides or scales, only short fades', !moving.length && fades > 0 && opened && !(await js("!!document.querySelector('.tile-ghost')")), JSON.stringify({ moving, fades, opened, ghost: await js("!!document.querySelector('.tile-ghost')"), reduced: await js("matchMedia('(prefers-reduced-motion: reduce)').matches") }));
       await wc.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
       try { wc.debugger.detach(); } catch {}
     },

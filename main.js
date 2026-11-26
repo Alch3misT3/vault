@@ -27,6 +27,8 @@ security.hardenApp({ dev: DEV });
 if (SMOKE) {
   // Never touch the real vault while testing.
   app.setPath('userData', path.join(app.getPath('temp'), 'vault-smoke-' + Date.now()));
+  // Screenshots of a window that other windows cover (Windows otherwise skips painting it). Test runs only.
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 } else if (PORTABLE_DIR) {
   const dataDir = path.join(PORTABLE_DIR, 'Vault Data');
   fs.mkdirSync(dataDir, { recursive: true });

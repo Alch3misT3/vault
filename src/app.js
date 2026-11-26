@@ -3,10 +3,10 @@
 
 const $ = (s) => document.querySelector(s);
 const api = window.vault;
-const AUTO_LOCK_MS = 5 * 60 * 1000;
 
 const state = {
   items: [],
+  sitePasskeys: [], // passkeys saved for websites (names and dates only)
   selectedId: null,
   query: '',
   mode: 'view',      // 'view' | 'edit' | 'new'
@@ -24,6 +24,7 @@ const VIEWS = [
   { id: 'codes', label: 'Codes', icon: 'i-timer', empty: ['No verification codes', 'Edit an account and choose Set Up Verification Code to keep its 2FA codes here.'] },
   { id: 'security', label: 'Security', icon: 'i-shield', empty: ['All clear', 'No weak, reused or very old passwords.'] },
   { id: 'deleted', label: 'Deleted', icon: 'i-trash', empty: ['Nothing deleted', `Deleted accounts stay here for ${BIN_DAYS} days so you can recover them.`] },
+  { id: 'passkeys', label: 'Passkeys', icon: 'i-key', empty: ['No passkeys', 'When a site offers a passkey in Chrome or Edge, Vault can save it here (Vault browser extension).'] },
 ];
 
 // ---------- tiny DOM helper ----------
@@ -142,7 +143,7 @@ async function setLogos(on) {
 }
 api.onLogos(applyLogos);
 const byTitle = (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true });
-const current = () => state.items.find((x) => x.id === state.selectedId) || null;
+const current = () => state.items.find((x) => x.id === state.selectedId) || state.sitePasskeys.find((x) => x.id === state.selectedId) || null;
 const fmtDate = (t) => new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 
 let toastTimer;
@@ -179,12 +180,12 @@ function openLink(url) {
 }
 
 // ---------- password generator ----------
-// Settings are a preference, not a secret, so they live in local storage.
+// Settings are a preference, not a secret: Vault keeps them in its settings file.
 const GEN_DEFAULT = { style: 'apple', length: 20, symbols: true, words: 5 };
-function genSettings() {
-  try { return { ...GEN_DEFAULT, ...JSON.parse(localStorage.getItem('vault.gen') || '{}') }; } catch { return { ...GEN_DEFAULT }; }
-}
-function saveGenSettings(s) { try { localStorage.setItem('vault.gen', JSON.stringify(s)); } catch {} }
+let genSaved = null;
+api.appPrefs().then((p) => { if (p && p.gen) genSaved = p.gen; });
+function genSettings() { return { ...GEN_DEFAULT, ...(genSaved || {}) }; }
+function saveGenSettings(s) { genSaved = { ...s }; api.setPref('gen', genSaved); }
 
 const rnd = (n) => { const a = new Uint32Array(1); let v; do { crypto.getRandomValues(a); v = a[0]; } while (v >= Math.floor(2 ** 32 / n) * n); return v % n; };
 
@@ -330,7 +331,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function showLock() {
   const seq = ++lockSeq;
   // Secrets leave memory at once; the window then sinks away before the lock card rises.
-  state.items = []; state.selectedId = null; state.draft = null; state.mode = 'view'; state.reveal.clear(); state.query = ''; state.view = 'all'; state.showHistory = false;
+  state.items = []; state.sitePasskeys = []; state.selectedId = null; state.draft = null; state.mode = 'view'; state.reveal.clear(); state.query = ''; state.view = 'all'; state.showHistory = false;
   logos.map.clear();
   window.fx.closeMenu();
   const appEl = $('#app');
@@ -338,12 +339,20 @@ async function showLock() {
     appEl.classList.remove('arrive');
     appEl.classList.add('leaving');
     await pause(230);
+    // The window now starts over in a fresh process, so nothing of the vault stays in its memory.
+    api.purge();
     appEl.classList.remove('leaving');
     if (seq !== lockSeq) return;
   }
   const st = await api.status();
   if (seq !== lockSeq) return;
   state.firstRun = !st.exists;
+  lockPasskeys = st.passkeys || [];
+  if (st.unlocked && $('#app').hidden) { // unlocked meanwhile (e.g. from Quick Search or a passkey prompt)
+    const r = await api.resume();
+    if (seq !== lockSeq) return;
+    if (r && r.ok) return unlocked(r.items);
+  }
   $('#lock').classList.remove('leaving');
   $('#q').value = '';
   $('#detail').replaceChildren();
@@ -366,6 +375,8 @@ async function showLock() {
   $('#pw1').placeholder = first ? 'New master password' : 'Master password';
   $('#pw1').value = ''; $('#pw2').value = '';
   $('#lockError').textContent = '';
+  $('#lockError').classList.remove('pk-info');
+  $('#pkUnlock').hidden = first || !lockPasskeys.length;
   updateLockUI();
   setTimeout(() => $('#pw1').focus(), 30);
 }
@@ -384,6 +395,7 @@ function updateLockUI() {
 
 function lockFail(msg) {
   const card = $('#lockForm');
+  $('#lockError').classList.remove('pk-info');
   $('#lockError').textContent = msg;
   card.classList.remove('shake'); void card.offsetWidth; card.classList.add('shake');
   $('#pw1').select();
@@ -437,6 +449,7 @@ function unlocked(items) {
   state.animateRows = true;
   render();
   requestLogos();
+  loadSitePasskeys().then(() => { if (!$('#app').hidden) renderList(); });
   $('#q').focus();
   bumpIdle();
 }
@@ -451,6 +464,7 @@ const SEVERITY = { reused: 0, weak: 1, old: 2 };
 function inView() {
   const v = state.view;
   if (v === 'deleted') return state.items.filter((i) => i.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt);
+  if (v === 'passkeys') return state.sitePasskeys.slice().sort(byTitle);
   const items = live();
   if (v === 'favorites') return items.filter((i) => i.favorite);
   if (v === 'codes') return items.filter((i) => otpOf(i));
@@ -466,7 +480,7 @@ function matches() {
   const q = state.query.trim().toLowerCase();
   if (!q) return inView().map((it) => ({ it, score: 0 }));
   // Search always looks through every account (or the whole bin, when that's open).
-  const pool = state.view === 'deleted' ? inView() : live();
+  const pool = state.view === 'deleted' || state.view === 'passkeys' ? inView() : live();
   const terms = q.split(/\s+/);
   const out = [];
   for (const it of pool) {
@@ -506,6 +520,7 @@ function renderViews() {
     codes: items.filter((i) => otpOf(i)).length,
     security: hm.size,
     deleted: state.items.length - items.length,
+    passkeys: state.sitePasskeys.length,
   };
   const views = $('#views');
   for (const t of [...views.querySelectorAll('.view-tab')]) t.remove(); // the pill stays, so it can glide
@@ -546,6 +561,7 @@ async function setView(id) {
 }
 
 function rowSub(it) {
+  if (it.passkey) return it.username || 'Passkey';
   if (state.view === 'deleted') {
     const days = Math.max(0, BIN_DAYS - Math.floor((Date.now() - it.deletedAt) / DAY));
     return `${days} ${days === 1 ? 'day' : 'days'} left`;
@@ -631,6 +647,7 @@ function renderDetail() {
   setTint(state.mode !== 'view' ? state.draft : it);
   if (state.mode === 'edit' || state.mode === 'new') return d.replaceChildren(...editView());
   if (!it) return d.replaceChildren(h('div', { class: 'detail-bar drag' }), blankView());
+  if (it.passkey) { lastShownId = it.id; return d.replaceChildren(...passkeyDetail(it)); }
   const fly = state.flyTile && lastShownId !== it.id;
   state.flyTile = false;
   d.replaceChildren(...detailView(it));
@@ -954,6 +971,7 @@ async function updateItem(it, patch, msg) {
 }
 
 async function deleteItem(it) {
+  if (it && it.passkey) return deletePasskey(it);
   if (!it || it.deletedAt) return it && purgeItem(it);
   const ok = await confirmAlert(`Delete “${it.title}”?`, `It moves to Recently Deleted, where you can recover it for ${BIN_DAYS} days.`, 'Delete', true);
   if (!ok) return;
@@ -984,6 +1002,14 @@ function toggleFavorite(it) {
 
 // Right-click (or the Menu key / Shift+F10) on an account. Items that can't be used are left out.
 async function rowMenu(it, e) {
+  if (it.passkey) {
+    if (state.mode === 'view' && state.selectedId !== it.id) await select(it.id);
+    const pick = await window.fx.menu([{ label: 'Open Website', value: 'open' }, 'sep', { label: 'Delete Passkey…', value: 'delete', danger: true }],
+      e && e.clientX ? { x: e.clientX, y: e.clientY, label: 'Passkey' } : { anchor: document.getElementById('row-' + it.id), keyboard: true, label: 'Passkey' });
+    if (pick === 'open') { const l = window.loginLink(it); if (l) openLink(l.url); }
+    if (pick === 'delete') deletePasskey(it);
+    return;
+  }
   if (state.mode === 'view' && state.selectedId !== it.id) await select(it.id);
   const link = window.loginLink(it);
   const cfg = otpOf(it);
@@ -1119,7 +1145,7 @@ async function restoreFlow() {
   const ok = await confirmAlert('Restore from a backup?', 'This replaces everything in your vault with the backup. You’ll unlock it with the master password it was made with.', 'Choose Backup…', true);
   if (!ok) return;
   const r = await api.restore();
-  if (r.ok) { showLock(); setTimeout(() => toast('Backup restored · unlock to continue'), 100); }
+  if (r.ok) { api.note('Backup restored · unlock to continue'); showLock(); }
   else if (r.error !== 'canceled') toast(r.error);
 }
 
@@ -1143,6 +1169,7 @@ async function moreMenu(e) {
     { label: 'Password Generator…', value: 'generator', key: 'Ctrl+G' },
     { label: 'Connect a Browser…', value: 'browser' },
     { label: 'Change Master Password…', value: 'change-password' },
+    { label: 'Unlock With Passkey…', value: 'passkeys' },
     'sep',
     { label: 'Quick Search', value: 'quick', key: 'Ctrl+Shift+Space' },
     p.openAtLogin != null ? { label: 'Open Vault When Windows Starts', value: 'login-item', checked: p.openAtLogin } : null,
@@ -1166,6 +1193,7 @@ function handleCommand(cmd) {
   if (cmd === 'backup') backupFlow();
   if (cmd === 'restore') restoreFlow();
   if (cmd === 'change-password') changePwFlow();
+  if (cmd === 'passkeys') passkeysFlow();
   if (cmd === 'check-updates') manualUpdateCheck();
   if (cmd === 'generator') generatorFlow(false);
   if (cmd === 'browser') browserFlow();
@@ -1304,9 +1332,10 @@ async function browserFlow(reopen) {
 api.onBridge(renderBrowsers);
 
 // ---------- change master password ----------
-function changePwFlow() {
+async function changePwFlow() {
   ['#cpOld', '#cpNew', '#cpNew2'].forEach((s) => { $(s).value = ''; });
   $('#cpError').textContent = '';
+  $('#cpPasskeys').hidden = !((await api.passkeys()) || []).length;
   $('#changePw').showModal();
   $('#cpOld').focus();
 }
@@ -1321,7 +1350,175 @@ async function changePwSubmit(e) {
   $('#cpGo').disabled = false;
   if (!r.ok) return void ($('#cpError').textContent = r.error === 'wrong' ? 'Current password is wrong.' : 'Couldn’t change it.');
   $('#changePw').close();
-  toast('Master password changed');
+  toast(r.passkeysRemoved ? 'Master password changed · add your passkeys again' : 'Master password changed');
+}
+
+// ---------- passkeys that unlock Vault (WebAuthn PRF) ----------
+// Windows shows its own dialog (phone by QR code, Windows Hello PIN, USB security key). The passkey's
+// PRF output is the secret: Vault uses it to unwrap the vault key, so a passkey without PRF is refused.
+let lockPasskeys = [];
+const bytesOf = (b64s) => Uint8Array.from(atob(b64s), (c) => c.charCodeAt(0));
+const fromB64url = (s) => bytesOf(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4));
+const b64of = (buf) => { let s = ''; for (const x of new Uint8Array(buf)) s += String.fromCharCode(x); return btoa(s); };
+const prfOut = (cred) => { const p = cred && cred.getClientExtensionResults().prf; return p && p.results && p.results.first ? p.results.first : null; };
+const NO_PRF = 'This passkey can’t unlock Vault: it doesn’t support PRF, the feature Vault needs to unlock your data with it. Nothing was added. Try your phone or another security key (you can delete the unused passkey on that device).';
+function webauthnMessage(e) {
+  const n = e && e.name;
+  if (n === 'NotAllowedError' || n === 'AbortError') return 'Cancelled or timed out.';
+  if (n === 'InvalidStateError') return 'That passkey is already added.';
+  if (n === 'NotSupportedError') return 'This device can’t make a passkey Vault can use.';
+  if (n === 'SecurityError') return 'Windows refused the request.';
+  return 'Something went wrong (' + (n || 'error') + '). Try again.';
+}
+
+async function passkeyUnlock() {
+  const form = $('#lockForm');
+  if (form.classList.contains('busy') || !lockPasskeys.length) return;
+  $('#lockError').textContent = '';
+  form.classList.add('busy');
+  try {
+    const evalBy = {};
+    for (const p of lockPasskeys) evalBy[p.id] = { first: bytesOf(p.salt) };
+    const cred = await navigator.credentials.get({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: location.hostname, userVerification: 'required', timeout: 120000,
+      allowCredentials: lockPasskeys.map((p) => ({ type: 'public-key', id: fromB64url(p.id), ...(p.transports.length ? { transports: p.transports } : {}) })),
+      extensions: { prf: { evalByCredential: evalBy } },
+    } });
+    const out = prfOut(cred);
+    if (!out) return lockFail('That passkey didn’t give Vault its unlock key. Use your master password.');
+    const r = await api.unlockPasskey(cred.id, b64of(out));
+    if (!r.ok) return lockFail('That passkey doesn’t unlock this vault. Use your master password.');
+    unlocked(r.items);
+  } catch (e) {
+    $('#lockError').classList.add('pk-info');
+    $('#lockError').textContent = webauthnMessage(e);
+  } finally { form.classList.remove('busy'); }
+}
+
+function renderPasskeys(list) {
+  list = list || [];
+  $('#pkList').replaceChildren(...(list.length ? [
+    h('div', { class: 'section-label' }, 'Unlocks Vault'),
+    h('div', { class: 'group' }, list.map((p) => h('div', { class: 'field-row br-row pk-row' },
+      h('div', { class: 'f-label' }, p.name),
+      h('div', { class: 'f-value muted' }, 'Added ' + fmtDate(p.added)),
+      h('button', { type: 'button', class: 'btn-plain danger-text', onclick: async () => {
+        const dlg = $('#passkeysDlg');
+        dlg.close();
+        const yes = await confirmAlert(`Remove “${p.name}”?`, 'It won’t unlock Vault any more. Your master password and other passkeys still work.', 'Remove', true);
+        if (yes) { const r = await api.passkeyRemove(p.id); if (r && r.ok) { toast('Passkey removed'); renderPasskeys(r.list); } }
+        else renderPasskeys(await api.passkeys());
+        dlg.showModal();
+      } }, 'Remove')))),
+  ] : [h('p', { class: 'pk-empty' }, 'No passkeys yet.')]));
+}
+
+async function passkeysFlow() {
+  $('#pkName').value = ''; $('#pkPw').value = ''; $('#pkStatus').textContent = '';
+  renderPasskeys(await api.passkeys());
+  $('#passkeysDlg').showModal();
+  $('#pkName').focus();
+}
+
+function pkStatus(msg, info) {
+  const s = $('#pkStatus');
+  s.textContent = msg;
+  s.classList.toggle('pk-info', !!info);
+}
+
+async function addPasskey() {
+  const btn = $('#pkAdd');
+  if (btn.disabled) return;
+  const pw = $('#pkPw').value;
+  if (!pw) { pkStatus('Enter your master password first.'); $('#pkPw').focus(); return; }
+  btn.disabled = true;
+  pkStatus('');
+  try {
+    const o = await api.passkeyBegin(pw, $('#pkName').value);
+    if (!o || o.error) {
+      pkStatus(o && o.error === 'wrong' ? 'Master password is wrong.' : o && o.error === 'old-format' ? 'Unlock with your master password once, then try again.' : 'Couldn’t start. Try again.');
+      return;
+    }
+    $('#pkPw').value = '';
+    pkStatus('Follow the steps in the Windows window…', true);
+    const salt = bytesOf(o.salt);
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: bytesOf(o.challenge), rp: { id: o.rpId, name: o.rpName },
+      user: { id: bytesOf(o.userId), name: o.userName, displayName: o.displayName },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
+      excludeCredentials: o.exclude.map((p) => ({ type: 'public-key', id: fromB64url(p.id), ...(p.transports.length ? { transports: p.transports } : {}) })),
+      attestation: 'none', timeout: 180000,
+      extensions: { prf: { eval: { first: salt } } },
+    } });
+    const ext = cred.getClientExtensionResults().prf;
+    if (!ext || ext.enabled !== true) { api.passkeyCancel(); pkStatus(NO_PRF); return; }
+    let out = ext.results && ext.results.first;
+    if (!out) {
+      // Most passkeys give their PRF output only when signing in: confirm once more.
+      pkStatus('Almost done: confirm once more so Vault can get the passkey’s unlock key.', true);
+      const a = await navigator.credentials.get({ publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: o.rpId, userVerification: 'required', timeout: 180000,
+        allowCredentials: [{ type: 'public-key', id: cred.rawId }], extensions: { prf: { eval: { first: salt } } },
+      } });
+      out = prfOut(a);
+      if (!out) { api.passkeyCancel(); pkStatus(NO_PRF); return; }
+    }
+    const transports = cred.response.getTransports ? cred.response.getTransports() : [];
+    const r = await api.passkeyFinish(cred.id, transports, b64of(out));
+    if (!r || !r.ok) { pkStatus(r && r.error === 'expired' ? 'That took too long. Try again.' : 'Couldn’t save it. Try again.'); return; }
+    renderPasskeys(r.list);
+    $('#pkName').value = '';
+    pkStatus('');
+    toast('Passkey added: it unlocks Vault now');
+  } catch (e) {
+    api.passkeyCancel();
+    pkStatus(webauthnMessage(e));
+  } finally { btn.disabled = false; }
+}
+
+// ---------- passkeys saved for websites (through the browser extension) ----------
+// Shown in their own view. The window gets names and dates only: the private keys stay in Vault's
+// main process, which also does all the signing.
+async function loadSitePasskeys() {
+  const list = (await api.sitePasskeys()) || [];
+  state.sitePasskeys = list.map((p) => ({ id: 'pk-' + p.id, title: p.rpId, username: p.userName || p.displayName || '', website: p.rpId, passkey: p }));
+}
+api.onSitePasskeys(async () => {
+  if ($('#app').hidden) return;
+  await loadSitePasskeys();
+  renderList();
+  if (state.view === 'passkeys' && state.mode === 'view') renderDetail();
+});
+
+function passkeyDetail(it) {
+  const p = it.passkey;
+  const link = window.loginLink(it);
+  const bar = h('div', { class: 'detail-bar drag' },
+    h('button', { class: 'glass-btn glass danger-text', onclick: () => deletePasskey(it) }, 'Delete'));
+  const hero = h('div', { class: 'hero' }, tile(it, true),
+    h('div', { class: 'hero-text' }, h('h1', {}, p.rpId), h('div', { class: 'hero-sub' }, 'Passkey')),
+    link ? h('button', { class: 'btn-primary', onclick: () => openLink(link.url), title: link.url }, icon('i-open'), 'Open Website') : null);
+  const row = (label, value) => h('div', { class: 'field-row' }, h('div', { class: 'f-label' }, label), h('div', { class: 'f-value' + (value ? '' : ' muted') }, value || 'None'), h('div', { class: 'row-actions' }));
+  const group = h('div', { class: 'group' },
+    row('Account', p.userName),
+    p.displayName && p.displayName !== p.userName ? row('Name', p.displayName) : null,
+    row('Website', p.rpId),
+    row('Created', fmtDate(p.created)),
+    row('Last used', p.lastUsed ? fmtDate(p.lastUsed) : 'Not yet'));
+  const note = h('p', { class: 'pk-detail-note' }, 'Sign in on this site in Chrome or Edge with the Vault extension: Vault asks you to confirm, then signs in. The passkey’s key never leaves Vault.');
+  return [bar, h('div', { class: 'detail-scroll' }, h('div', { class: 'detail-inner' }, hero, group, note))];
+}
+
+async function deletePasskey(it) {
+  const p = it.passkey;
+  if (!(await confirmAlert(`Delete the passkey for ${p.rpId}?`, `You won’t be able to sign in to ${p.rpId} as ${p.userName || 'this account'} with it any more. Make sure the site has another way in (a password or another passkey). This can’t be undone.`, 'Delete', true))) return;
+  const r = await api.sitePasskeyDelete(p.id);
+  if (!r || !r.ok) { toast('Couldn’t delete it. Try again.'); return; }
+  await loadSitePasskeys();
+  state.selectedId = null;
+  render();
+  toast('Passkey deleted');
 }
 
 // ---------- keyboard ----------
@@ -1346,7 +1543,8 @@ document.addEventListener('keydown', (e) => {
     if (state.query) { $('#q').value = ''; state.query = ''; renderList(); renderDetail(); $('#q').focus(); return; }
   }
   if (editing) return;
-  if (ctrl && !e.shiftKey && /^[1-5]$/.test(e.key)) { e.preventDefault(); setView(VIEWS[+e.key - 1].id); return; }
+  if (ctrl && !e.shiftKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); setView(VIEWS[+e.key - 1].id); return; }
+  if (it && it.passkey && ctrl && /^[deuc]$/i.test(e.key)) { e.preventDefault(); return; } // nothing to edit, star or copy
   if (ctrl && e.key.toLowerCase() === 'd' && it) { e.preventDefault(); toggleFavorite(it); return; }
   if (ctrl && e.key.toLowerCase() === 'e' && it && !it.deletedAt) { e.preventDefault(); startEdit(it); return; }
   if (ctrl && e.key.toLowerCase() === 'o' && it) { e.preventDefault(); const l = window.loginLink(it); if (l) openLink(l.url); return; }
@@ -1363,11 +1561,12 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- auto-lock ----------
-let idleTimer;
+// Vault itself locks after 5 minutes without use (main process); the window only reports that it's in use.
+let lastPing = 0;
 function bumpIdle() {
-  clearTimeout(idleTimer);
-  if ($('#app').hidden) return;
-  idleTimer = setTimeout(() => { if (!$('#app').hidden) lockNow(); }, AUTO_LOCK_MS);
+  if ($('#app').hidden || Date.now() - lastPing < 5000) return;
+  lastPing = Date.now();
+  api.activity();
 }
 ['mousemove', 'keydown', 'mousedown', 'wheel'].forEach((ev) => document.addEventListener(ev, bumpIdle, { passive: true }));
 
@@ -1383,6 +1582,10 @@ $('#moreBtn').addEventListener('click', moreMenu);
 $('#moreBtn').addEventListener('keydown', (e) => { if (e.key === 'ArrowDown') { e.preventDefault(); moreMenu({ detail: 0 }); } });
 $('#exportForm').addEventListener('submit', exportSubmit);
 $('#changePwForm').addEventListener('submit', changePwSubmit);
+$('#pkUnlock').addEventListener('click', passkeyUnlock);
+$('#pkAdd').addEventListener('click', addPasskey);
+$('#pkName').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#pkPw').focus(); } });
+$('#pkPw').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addPasskey(); } });
 $('#q').addEventListener('focus', () => document.querySelector('.sidebar').classList.add('list-active'));
 $('#q').addEventListener('blur', () => document.querySelector('.sidebar').classList.remove('list-active'));
 api.onMenu(handleCommand);
@@ -1396,3 +1599,4 @@ api.onActivity(bumpIdle);
 
 window.__vaultState = state; // read by the automated smoke test only
 showLock();
+api.takeNote().then((n) => { if (n) setTimeout(() => toast(n), 150); });

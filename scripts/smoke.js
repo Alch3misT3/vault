@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 
-module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick, getBridge, getLogos }) {
+module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened, smokeIO, clipboard, showQuick, getQuick, getBridge, getLogos, test }) {
   const root = path.join(__dirname, '..');
   const shots = path.join(root, 'smoke-shots');
   const fx = (n) => path.join(root, 'test-fixtures', n);
@@ -18,12 +18,23 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
   const check = (name, ok, extra) => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const js = (code) => win.webContents.executeJavaScript(code);
-  const shot = async (name) => { await wait(350); const img = await win.webContents.capturePage(); fs.writeFileSync(path.join(shots, name + '.png'), img.toPNG()); };
-  const waitFor = async (code, ms = 8000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await js(code)) return true; await wait(80); } return false; };
-  const screenShot = async (name) => { try { const { screen } = require('electron'); const b = win.getBounds(); const f = screen.getDisplayMatching(b).scaleFactor; win.setAlwaysOnTop(true); win.show(); await wait(700); require('child_process').execFileSync('powershell', ['-NoProfile','-ExecutionPolicy','Bypass','-File', path.join(__dirname,'screen-shot.ps1'), String(Math.round(b.x*f)), String(Math.round(b.y*f)), String(Math.round(b.width*f)), String(Math.round(b.height*f)), path.join(shots, name + '.png')]); win.setAlwaysOnTop(false); } catch (e) { console.log('screen shot skipped', e.message); } };
+  // (a window that just started over may not have painted yet: try again for a moment)
+  const shot = async (name) => { await wait(350); let img; for (let i = 0; ; i++) { try { img = await win.webContents.capturePage(); break; } catch (e) { if (i > 20) throw e; if (i === 0) { win.setAlwaysOnTop(true); win.moveTop(); win.webContents.invalidate(); } await wait(100); } } fs.writeFileSync(path.join(shots, name + '.png'), img.toPNG()); };
+  // (the window reloads in a fresh process when Vault locks, so a check may hit a page that's starting over)
+  const waitFor = async (code, ms = 8000) => { const t = Date.now(); while (Date.now() - t < ms) { try { if (await js(code)) return true; } catch {} await wait(80); } return false; };
+  const screenShot = async (name) => { try { const { screen } = require('electron'); const b = win.getBounds(); const f = screen.getDisplayMatching(b).scaleFactor; win.setAlwaysOnTop(true); win.show(); await wait(700); require('child_process').execFileSync('powershell', ['-NoProfile','-ExecutionPolicy','Bypass','-File', path.join(__dirname,'screen-shot.ps1'), '-x:' + Math.round(b.x*f), '-y:' + Math.round(b.y*f), '-w:' + Math.round(b.width*f), '-h:' + Math.round(b.height*f), '-out:' + path.join(shots, name + '.png')]); win.setAlwaysOnTop(false); } catch (e) { console.log('screen shot skipped', e.message); } };
   const count = () => js('window.__vaultState.items.length');
+  // Lock, and wait until the window has started over in a fresh process showing the lock screen.
+  const relock = async () => {
+    const fresh = new Promise((r) => win.webContents.once('did-finish-load', r));
+    try { await js('lockNow(); true'); } catch {}
+    const ok = await Promise.race([fresh.then(() => true), wait(6000).then(() => false)]);
+    await waitFor("!!window.__vaultState && !document.getElementById('lock').hidden");
+    return ok;
+  };
   const MASTER = 'correct horse battery';
 
+  if (process.env.VAULT_DEBUG_EVENTS) for (const ev of ['render-process-gone', 'did-finish-load', 'did-fail-load', 'did-start-loading', 'dom-ready']) win.webContents.on(ev, (_e, d) => console.log('EVENT', ev, Date.now() % 100000, d && d.reason || ''));
   win.webContents.on('console-message', (e) => { const m = e.message || ''; if (/error|uncaught/i.test(m)) console.log('RENDERER:', m); });
   try {
     await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once('did-finish-load', r) : r()));
@@ -164,8 +175,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("document.getElementById('importDlg').close()");
 
     // 9. Lock / unlock
-    await js('lockNow()');
-    await waitFor("!document.getElementById('lock').hidden");
+    check('locking reloads the window in a fresh process', await relock());
     check('lock clears data from memory', (await count()) === 0);
     await js(`(() => { const el = document.getElementById('pw1'); el.value = 'nope nope'; el.dispatchEvent(new Event('input')); document.getElementById('unlockGo').click(); })()`);
     await waitFor("document.getElementById('lockError').textContent.length > 0");
@@ -245,7 +255,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     check('reused warning names the other account', await js("/Also used for Netflix/.test(document.querySelector('.notice.warn').textContent)"));
 
     // 14. Password generator options
-    await js("localStorage.removeItem('vault.gen')");
+    await js("genSaved = null");
     const gen = (style, extra = '') => js(`(() => { const s = { ...genSettings(), style: ${JSON.stringify(style)} ${extra} }; return generatePassword(s); })()`);
     const words = await gen('words', ', words: 5');
     check('word passwords: 5 words, a capital and a number', words.split('-').length === 5 && /[A-Z]/.test(words) && /\d/.test(words), words);
@@ -267,13 +277,14 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
         const { screen } = require('electron');
         const q = getQuick(); const b = q.getBounds(); const f = screen.getDisplayMatching(b).scaleFactor;
         q.setAlwaysOnTop(true, 'screen-saver'); q.showInactive(); await wait(700);
-        require('child_process').execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'screen-shot.ps1'), String(Math.round(b.x * f)), String(Math.round(b.y * f)), String(Math.round(b.width * f)), String(Math.round(b.height * f)), path.join(shots, name + '.png')]);
+        require('child_process').execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'screen-shot.ps1'), '-x:' + Math.round(b.x * f), '-y:' + Math.round(b.y * f), '-w:' + Math.round(b.width * f), '-h:' + Math.round(b.height * f), '-out:' + path.join(shots, name + '.png')]);
       } catch (e) { console.log('quick screenshot skipped:', e.message); }
     };
     const qjs = (code) => getQuick().webContents.executeJavaScript(code);
     const qWait = async (code, ms = 6000) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { try { if (await qjs(code)) return true; } catch {} await wait(80); } return false; };
     check('quick search opens with every account', await qWait(`window.__quick && window.__quick.items.length === ${await live()}`));
-    check('quick search springs in', await qjs("document.querySelector('.q-panel').classList.contains('in')"));
+    check('quick search springs in', await qjs("document.querySelector('.q-panel').classList.contains('opening')"));
+    check('quick search panel fills its window (not squeezed by the text-field style)', await qjs("getComputedStyle(document.querySelector('.q-panel')).height === innerHeight + 'px' && innerHeight > 300"));
     await qjs(`(() => { const el = document.getElementById('qq'); el.value = 'git'; el.dispatchEvent(new Event('input')); })()`);
     check('quick search finds GitHub', await qWait("/GitHub/.test(document.querySelector('.q-row[aria-selected=\"true\"]').textContent)"));
     await qWait("!!document.querySelector('.q-code-num')", 3000);
@@ -292,8 +303,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     check('copied secrets are cleared from the clipboard afterwards', (await clipboard.readText()) === '');
     check('quick panel never receives secrets', await qjs("!JSON.stringify(window.__quick.items).includes('gh-Pa55-word') && !JSON.stringify(window.__quick.items).includes('JBSWY3DP')"));
     // locked: unlocking in the panel unlocks the window too
-    await js('lockNow()');
-    await waitFor("!document.getElementById('lock').hidden");
+    await relock();
     showQuick(); showQuick(); // close and reopen
     check('quick search asks for the master password when locked', await qWait("!document.getElementById('qLock').hidden"));
     await quickShot('21-quick-locked');
@@ -301,34 +311,70 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     check('unlocking from quick search unlocks the window', (await waitFor("!document.getElementById('app').hidden")) && (await qWait("!document.getElementById('qSearch').hidden")));
     getQuick().hide();
 
-    // 16. Browser extension: run the extension's own client code against Vault's bridge
+    // 16. Browser extension: run the extension's own client code against Vault's bridge, through the
+    //     real native messaging relay (vault-native-host.exe) and Vault's named pipe.
     {
       const vm = require('vm');
+      const { spawn } = require('child_process');
+      const nh = require('../nativehost');
+      const hostExe = require('./build-host')();
       const bridge = getBridge();
       const store = {};
-      const chromeMock = { storage: { local: {
-        get: async (keys) => Object.fromEntries(keys.filter((k) => k in store).map((k) => [k, store[k]])),
-        set: async (o) => { Object.assign(store, o); },
-        remove: async (keys) => { keys.forEach((k) => delete store[k]); },
-      } } };
-      // Only the test Vault's port answers (a real Vault running on this PC may hold another one).
-      const testFetch = (u, o) => { const port = +new URL(u).port; return port === getBridge().state().port ? fetch(u, o) : Promise.reject(new TypeError('fetch failed')); };
-      const ctx = vm.createContext({ chrome: chromeMock, crypto: globalThis.crypto, fetch: testFetch, AbortController, setTimeout, clearTimeout, TextEncoder, TextDecoder, btoa, atob, URL, console, navigator: { userAgent: 'Mozilla/5.0 Chrome/140.0 Safari/537.36 Edg/140.0' } });
+      const relays = new Set();
+      // What the browser does for chrome.runtime.connectNative(): start the host and frame messages.
+      const sent = [];
+      function nativePort() {
+        const p = spawn(hostExe, ['chrome-extension://lolpbbecfonicibdeabcfojfahakhlbk/'], { env: { ...process.env, VAULT_PIPE: bridge.state().pipe } });
+        relays.add(p);
+        const onMsg = []; const onDisc = [];
+        p.stdout.on('data', nh.frameReader((m) => onMsg.forEach((f) => f(m)), () => p.kill()));
+        p.on('exit', () => { relays.delete(p); onDisc.forEach((f) => f()); });
+        return {
+          postMessage: (m) => { sent.push(m); p.stdin.write(nh.frame(m)); },
+          disconnect: () => { try { p.kill(); } catch {} },
+          onMessage: { addListener: (f) => onMsg.push(f) },
+          onDisconnect: { addListener: (f) => onDisc.push(f) },
+        };
+      }
+      const chromeMock = {
+        runtime: { connectNative: (name) => { if (name !== 'local.vault.app') throw new Error('host'); return nativePort(); }, lastError: null },
+        storage: { local: {
+          get: async (keys) => Object.fromEntries(keys.filter((k) => k in store).map((k) => [k, store[k]])),
+          set: async (o) => { Object.assign(store, o); },
+          remove: async (keys) => { keys.forEach((k) => delete store[k]); },
+        } },
+      };
+      const ctx = vm.createContext({ chrome: chromeMock, crypto: globalThis.crypto, setTimeout, clearTimeout, TextEncoder, TextDecoder, btoa, atob, URL, console, navigator: { userAgent: 'Mozilla/5.0 Chrome/140.0 Safari/537.36 Edg/140.0' } });
       vm.runInContext(fs.readFileSync(path.join(root, 'browser-extension', 'vault-client.js'), 'utf8'), ctx);
       const VC = ctx.VaultClient;
       const err = (p) => p.then(() => 'no error', (e) => e.message);
+      // A raw message straight into the pipe, as any program on this PC could send one.
+      const raw = (m) => new Promise((resolve) => {
+        const s = require('net').connect(nh.pipePath(bridge.state().pipe));
+        s.on('data', nh.frameReader((r) => { s.destroy(); resolve(r); }, () => resolve(null)));
+        s.on('error', () => resolve(null));
+        s.write(nh.frame({ id: 1, ...m }));
+      });
 
       check('bridge is off until a browser is paired', !bridge.state().listening);
       check('extension’s links.js matches the app’s', fs.readFileSync(path.join(root, 'browser-extension', 'links.js'), 'utf8') === fs.readFileSync(path.join(root, 'src', 'links.js'), 'utf8'));
+      const man = JSON.parse(fs.readFileSync(path.join(root, 'browser-extension', 'manifest.json'), 'utf8'));
+      check('extension: native messaging only, no web port or host permissions', man.permissions.includes('nativeMessaging') && !man.host_permissions && /connect-src 'none'/.test(man.content_security_policy.extension_pages) && !/127\.0\.0\.1|fetch\(/.test(fs.readFileSync(path.join(root, 'browser-extension', 'vault-client.js'), 'utf8')));
+      check('extension has a fixed id (its manifest key), the only one the native host accepts', nh.extensionId(path.join(root, 'browser-extension', 'manifest.json')) === 'lolpbbecfonicibdeabcfojfahakhlbk');
+      { // the relay says "offline" when Vault isn't listening
+        const p = spawn(hostExe, [], { env: { ...process.env, VAULT_PIPE: 'vault-nobody-' + process.pid } });
+        const got = await new Promise((r) => { p.stdout.on('data', nh.frameReader(r, () => r(null))); setTimeout(() => r(null), 4000); });
+        check('the relay reports “offline” when Vault isn’t listening', got && got.offline === true);
+      }
       await js("browserFlow()");
       await waitFor("document.getElementById('browserDlg').open && /^[A-Z2-7]{4}(-[A-Z2-7]{4}){7}$/.test(document.getElementById('brCode').textContent)");
       const code = await js("document.getElementById('brCode').textContent");
       check('Connect a Browser shows a one-time code', /^[A-Z2-7]{4}(-[A-Z2-7]{4}){7}$/.test(code), code);
       await wait(300);
-      check('bridge listens on 127.0.0.1 while pairing', bridge.state().listening && bridge.state().pairing);
+      check('bridge listens on its named pipe while pairing (no network port)', bridge.state().listening && bridge.state().pairing && /^vault-browser-/.test(bridge.state().pipe) && !('port' in bridge.state()));
       const wrong = code.replace(/^./, (c) => (c === 'A' ? 'B' : 'A'));
       { const m = await err(VC.pair(wrong)); check('a wrong code is refused', /doesn’t match/.test(m), m); }
-      { const m = await err(VC.pair(code.toLowerCase())); check('the right code pairs the browser', m === 'no error', m); }
+      { const m = await err(VC.pair(code.toLowerCase())); check('the right code pairs the browser (through the relay)', m === 'no error', m); }
       check('Vault lists the browser as connected', await waitFor("/Microsoft Edge/.test(document.getElementById('brClients').textContent) && !document.getElementById('brAgain').hidden"));
       await shot('22-connect-browser');
       check('the code works only once', /Connect a Browser first|didn’t accept/.test(await err(VC.pair(code))));
@@ -350,45 +396,46 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
       await clipboard.clear();
       await VC.rpc('copy', { id: srch.items[0].id, what: 'password' });
       check('extension copy goes through Vault (auto-clears)', (await clipboard.readText()) === 'gh-Pa55-word');
+      check('nothing secret crosses the relay in the clear', !sent.some((m) => JSON.stringify(m).includes('gh-Pa55-word') || JSON.stringify(m).includes(MASTER)));
 
-      const port = bridge.state().port;
-      const evil = await fetch(`http://127.0.0.1:${port}/hello`, { headers: { Origin: 'https://evil.example' } });
-      check('web pages are refused', evil.status === 403);
-      const forged = await fetch(`http://127.0.0.1:${port}/rpc`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ clientId: store.clientId, iv: 'AAAAAAAAAAAAAAAA', ct: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAA' }) });
-      check('messages without the key are refused', forged.status === 401);
-      // capture one real request and send it again
-      let captured = null;
-      const realFetch = ctx.fetch;
-      ctx.fetch = async (u, opts) => { if (/\/rpc$/.test(u)) captured = opts; return realFetch(u, opts); };
-      await VC.rpc('status');
-      ctx.fetch = realFetch;
-      const replay = await fetch(`http://127.0.0.1:${port}/rpc`, captured);
-      check('a replayed message is refused', replay.status === 401);
+      const forged = await raw({ kind: 'rpc', clientId: store.clientId, iv: 'AAAAAAAAAAAAAAAA', ct: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+      check('messages without the key are refused', forged && forged.error === 'auth', JSON.stringify(forged));
+      const captured = sent.filter((m) => m.kind === 'rpc').pop();
+      const replay = await raw({ kind: 'rpc', clientId: captured.clientId, iv: captured.iv, ct: captured.ct });
+      check('a replayed message is refused', replay && replay.error === 'replay', JSON.stringify(replay));
+      const unknownClient = await raw({ kind: 'rpc', clientId: '0'.repeat(32), iv: captured.iv, ct: captured.ct });
+      check('an unpaired client is refused', unknownClient && unknownClient.error === 'not-paired');
 
-      await js('lockNow()');
-      await waitFor("!document.getElementById('lock').hidden");
+      await relock();
       check('locked Vault gives the extension nothing', (await VC.rpc('list', { url: 'https://www.netflix.com/' })).locked === true);
       check('wrong master password from the extension fails', (await VC.rpc('unlock', { password: 'nope nope' })).ok === false);
       check('unlocking from the extension unlocks Vault', (await VC.rpc('unlock', { password: MASTER })).ok === true && (await waitFor("!document.getElementById('app').hidden")));
       const settingsRaw = fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8');
       check('browser key is stored encrypted (Windows DPAPI)', /"key":"dpapi:/.test(settingsRaw) && !settingsRaw.includes(store.key));
 
-      // Optional: the same in a real Edge window (VAULT_EXT_E2E=1 npm run smoke).
+      // Website passkeys through the same channel (Vault's own window confirms).
+      await require('./smoke-sitepasskeys')({ app, win, js, wait, waitFor, shot, check, VC, getQuick, test, relock, MASTER });
+
+      // Optional: the same in a real Edge window, incl. webauthn.io (VAULT_EXT_E2E=1 npm run smoke).
       if (process.env.VAULT_EXT_E2E) {
         const { code: code2 } = bridge.startPairing();
-        await require('./ext-e2e')({ code: code2, check, shotsDir: shots, wait, master: MASTER });
+        await require('./ext-e2e')({ code: code2, check, shotsDir: shots, wait, master: MASTER, pipe: bridge.state().pipe, hostExe, test, win, js, waitFor, relock });
         for (const c of bridge.clients()) if (c.id !== store.clientId) bridge.remove(c.id);
         bridge.cancelPairing();
       }
 
       bridge.remove(bridge.clients()[0].id);
-      check('a removed browser is cut off', /no longer knows|isn’t running/.test(await err(VC.rpc('status'))));
+      check('a removed browser is cut off', /no longer knows|isn’t running|refused/.test(await err(VC.rpc('status'))));
       await wait(200);
       check('bridge stops when no browser is paired', !bridge.state().listening);
+      for (const p of relays) try { p.kill(); } catch {}
     }
 
+    // 18. Security: windows, IPC, navigation, CSP, permissions, fuses, crypto, lock, clipboard
+    await require('./smoke-security')({ app, win, js, wait, waitFor, check, clipboard, vaultPath, relock, test, MASTER, getQuick });
+
     // 17. Site logos (local test websites only)
-    await require('./smoke-logos')({ app, win, js, wait, waitFor, shot, check, getLogos, getQuick, showQuick, nativeTheme, MASTER });
+    await require('./smoke-logos')({ app, win, js, wait, waitFor, relock, shot, check, getLogos, getQuick, showQuick, nativeTheme, MASTER });
 
     // 10. Dark mode
     nativeTheme.themeSource = 'dark';
@@ -397,11 +444,13 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("startEdit(window.__vaultState.items.find(i => i.title === 'Twitch'))");
     await shot('12-dark-edit');
     await js("cancelEdit()");
-    await js("deleteItem(window.__vaultState.items.find(i => i.title === 'Twitch'))");
+    // (don't wait on deleteItem's promise: it settles only when the dialog closes)
+    await js("deleteItem(window.__vaultState.items.find(i => i.title === 'Twitch')); true");
+    await waitFor("document.getElementById('alert').open", 3000);
     await shot('13-dark-delete-alert');
     await js("document.getElementById('alertOk').click()");
     await waitFor("window.__vaultState.items.filter(i => !i.deletedAt).length === 10");
-    check('delete moves the account to Recently Deleted', (await live()) === 10 && (await count()) === 11);
+    check('delete moves the account to Recently Deleted', (await live()) === 10 && (await count()) === 11, (await live()) + '/' + (await count()));
     await js("setView('deleted')");
     check('Recently Deleted lists it with days left', await js("/Twitch/.test(document.querySelector('#list .row').textContent) && /30 days left/.test(document.querySelector('#list .row').textContent)"));
     await shot('13b-recently-deleted');
@@ -409,18 +458,21 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await waitFor(`!${byName('Twitch')}.deletedAt`);
     check('Recover brings it back', (await live()) === 11);
     await js(`updateItem(${byName('Twitch')}, { deletedAt: Date.now() - 31 * 86400000 })`);
-    await js('lockNow()');
-    await waitFor("!document.getElementById('lock').hidden");
+    await relock();
     await js(`(() => { const el = document.getElementById('pw1'); el.value = ${JSON.stringify(MASTER)}; el.dispatchEvent(new Event('input')); document.getElementById('unlockGo').click(); })()`);
     await waitFor("!document.getElementById('app').hidden");
     check('accounts deleted over 30 days ago are removed for good', (await count()) === 10 && !(await js(`!!${byName('Twitch')}`)));
     nativeTheme.themeSource = 'light';
-    await js("lockNow()");
-    await waitFor("!document.getElementById('lock').hidden");
+
+    // 19. Unlock with a passkey (virtual authenticators) and the vault file format / old vaults
+    await require('./smoke-passkeys')({ app, win, js, wait, waitFor, shot, check, vaultPath, relock, test, MASTER });
+
+    await relock();
     await shot('14-locked');
   } catch (err) {
     check('smoke run crashed', false, err && err.stack);
   }
+  try { require('./smoke-security').scanDisk({ app, check, secrets: [MASTER, 'gh-Pa55-word', 'another horse battery', 'brand new master pw', 'my old vault pw', 'old-Pa55'] }); } catch (err) { check('disk scan crashed', false, err.stack); }
   const failed = results.filter((x) => !x).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed. Screenshots: ${shots}`);
   try { fs.rmSync(app.getPath('userData'), { recursive: true, force: true }); } catch {}

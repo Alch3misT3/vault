@@ -26,6 +26,8 @@ if ($LASTEXITCODE -ne 0) {
 
 # 3. Build and upload (uses the GitHub CLI sign-in).
 Remove-Item dist -Recurse -Force -ErrorAction SilentlyContinue
+node scripts/build-host.js
+if ($LASTEXITCODE -ne 0) { throw 'Could not build the browser relay (vault-native-host.exe).' }
 $env:GH_TOKEN = (& $gh auth token)
 try {
   npx electron-builder --win nsis portable --publish always

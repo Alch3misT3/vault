@@ -205,7 +205,7 @@ document.addEventListener('keydown', (e) => {
 q.onShow(() => {
   st.sel = 0; $('#qq').value = ''; refresh();
   const p = $('.q-panel');
-  p.classList.remove('in', 'out'); void p.offsetWidth; p.classList.add('in');
+  p.classList.remove('opening', 'out'); void p.offsetWidth; p.classList.add('opening');
 });
 q.onHiding(() => $('.q-panel').classList.add('out'));
 window.__quick = st; // smoke test only

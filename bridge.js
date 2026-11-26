@@ -1,17 +1,19 @@
 'use strict';
 // Browser bridge: lets the Vault browser extension find and fill logins.
 //
-// - Listens on 127.0.0.1 only, and only once a browser has been paired (or a pairing is open).
+// - The extension reaches Vault through native messaging: the browser starts Vault's small relay
+//   (vault-native-host.exe), which passes messages over a named pipe that only this Windows user can
+//   open. Vault listens only once a browser has been paired (or a pairing is open). No network port.
 // - Pairing: Vault shows a one-time code (160 random bits, valid 10 minutes). The extension and
 //   Vault both derive a 256-bit key from it with HKDF, salted with the extension's random id.
 // - Every request and reply is AES-256-GCM encrypted with that key, time-stamped and single-use,
 //   so another program on this PC, or a web page, can't read or replay anything.
 // - Keys are stored with Windows DPAPI (Electron safeStorage) in settings.json.
 
-const http = require('http');
+const net = require('net');
+const nh = require('./nativehost');
 const crypto = require('crypto');
 
-const PORTS = [47290, 47291, 47292, 47293, 47294];
 const PAIR_MS = 10 * 60 * 1000;
 const MAX_SKEW = 2 * 60 * 1000;
 const INFO = Buffer.from('vault-browser-v1');
@@ -61,7 +63,8 @@ function siteOf(hostname) {
 module.exports = function createBridge(o) {
   // o: { app, safeStorage, prefs, setPref, sessionItems, unlock, isUnlocked, exists, copy, otp, links, nodeHmac, onActivity, onChange, log }
   let server = null;
-  let port = null;
+  let failed = false;
+  const pipe = o.pipeName || nh.pipeName();
   let pending = null;              // { bytes, code, expires }
   const seen = new Map();          // nonce -> time (replay protection)
 
@@ -104,7 +107,7 @@ module.exports = function createBridge(o) {
     return out.slice(0, 50);
   }
 
-  async function handle(msg) {
+  async function handle(msg, client) {
     const unlocked = o.isUnlocked();
     if (msg.type === 'status') return { unlocked, exists: o.exists(), version: o.app.getVersion() };
     if (msg.type === 'unlock') {
@@ -112,6 +115,11 @@ module.exports = function createBridge(o) {
       const r = await o.unlock(String(msg.password || ''));
       return { ok: !!r.ok, error: r.error };
     }
+    // Passkeys: Vault asks the user itself (and asks to unlock first when locked).
+    if (msg.type === 'passkey' && o.passkeyRequest) {
+      return o.passkeyRequest({ op: msg.op, origin: msg.origin, options: msg.options, requestId: String(msg.requestId || ''), browser: client ? client.name : 'Browser' });
+    }
+    if (msg.type === 'passkey-cancel' && o.passkeyCancel) { o.passkeyCancel(String(msg.requestId || '')); return { ok: true }; }
     if (!unlocked) return { locked: true };
     o.onActivity();
     if (msg.type === 'list') return { items: listFor(msg.url, msg.query) };
@@ -132,69 +140,70 @@ module.exports = function createBridge(o) {
     return { error: 'unknown' };
   }
 
-  // ---- HTTP -------------------------------------------------------------------
-  function reply(res, status, body) {
-    const data = JSON.stringify(body);
-    // No CORS headers on purpose: web pages can't read anything. The extension has host permission.
-    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-    res.end(data);
-  }
+  // ---- transport: a named pipe, reached through the native messaging relay -------------
+  // Messages: { id, kind: 'hello' } | { id, kind: 'pair', clientId, name, proof } | { id, kind: 'rpc', clientId, iv, ct }
+  async function onMessage(m) {
+    if (!m || typeof m !== 'object') return { error: 'bad' };
+    if (m.kind === 'hello') return { app: 'vault', v: 2, pairing: !!(pending && pending.expires > Date.now()) };
+    const clientId = String(m.clientId || '');
+    if (!/^[a-f0-9]{32}$/.test(clientId)) return { error: 'client' };
 
-  async function onRequest(req, res) {
-    // Only this machine, only the extension: refuse web-page origins and rebinding tricks.
-    const origin = req.headers.origin || '';
-    if (origin && !/^(chrome|moz)-extension:\/\//.test(origin) && !/^extension:\/\//.test(origin)) return reply(res, 403, { error: 'origin' });
-    if (!/^(127\.0\.0\.1|localhost):\d+$/.test(req.headers.host || '')) return reply(res, 403, { error: 'host' });
-    if (req.method === 'GET' && req.url === '/hello') return reply(res, 200, { app: 'vault', v: 1, pairing: !!(pending && pending.expires > Date.now()) });
-    if (req.method !== 'POST') return reply(res, 405, { error: 'method' });
-
-    let raw = '';
-    for await (const chunk of req) { raw += chunk; if (raw.length > 65536) return reply(res, 413, { error: 'size' }); }
-    let body;
-    try { body = JSON.parse(raw); } catch { return reply(res, 400, { error: 'json' }); }
-    const clientId = String(body.clientId || '');
-    if (!/^[a-f0-9]{32}$/.test(clientId)) return reply(res, 400, { error: 'client' });
-
-    if (req.url === '/pair') {
-      if (!pending || pending.expires < Date.now()) return reply(res, 403, { error: 'no-pairing' });
+    if (m.kind === 'pair') {
+      if (!pending || pending.expires < Date.now()) return { error: 'no-pairing' };
       const key = deriveKey(pending.bytes, clientId);
-      const proof = Buffer.from(String(body.proof || ''), 'base64');
+      const proof = Buffer.from(String(m.proof || ''), 'base64');
       const want = hmac(key, 'pair:' + clientId);
       if (proof.length !== want.length || !crypto.timingSafeEqual(proof, want)) {
         pending.tries = (pending.tries || 0) + 1;
         if (pending.tries >= 5) pending = null; // a few typos are fine, guessing isn't
-        return reply(res, 403, { error: 'code' });
+        return { error: 'code' };
       }
-      const name = String(body.name || 'Browser').slice(0, 60);
+      const name = String(m.name || 'Browser').slice(0, 60);
       saveClients([...clients().filter((c) => c.id !== clientId), { id: clientId, name, key: await enc(key), added: Date.now() }]);
       pending = null;
       o.log('paired ' + name);
-      return reply(res, 200, { ok: true, proof: hmac(key, 'paired:' + clientId).toString('base64') });
+      return { ok: true, proof: hmac(key, 'paired:' + clientId).toString('base64') };
     }
 
-    if (req.url === '/rpc') {
+    if (m.kind === 'rpc') {
       const key = await keyFor(clientId);
-      if (!key) return reply(res, 401, { error: 'not-paired' });
+      if (!key) return { error: 'not-paired' };
       let msg;
-      try { msg = open(key, clientId, body); } catch { return reply(res, 401, { error: 'auth' }); }
+      try { msg = open(key, clientId, m); } catch { return { error: 'auth' }; }
       const now = Date.now();
-      if (typeof msg.t !== 'number' || Math.abs(now - msg.t) > MAX_SKEW || typeof msg.n !== 'string' || seen.has(msg.n)) return reply(res, 401, { error: 'replay' });
+      if (typeof msg.t !== 'number' || Math.abs(now - msg.t) > MAX_SKEW || typeof msg.n !== 'string' || seen.has(msg.n)) return { error: 'replay' };
       seen.set(msg.n, now);
       for (const [n, t] of seen) if (now - t > 2 * MAX_SKEW) seen.delete(n);
       let result;
-      try { result = await handle(msg); } catch (err) { result = { error: 'failed' }; o.log('bridge error: ' + (err && err.message)); }
-      return reply(res, 200, seal(key, clientId, { n: msg.n, ...result }));
+      const client = clients().find((c) => c.id === clientId);
+      try { result = await handle(msg, client); } catch (err) { result = { error: 'failed' }; o.log('bridge error: ' + (err && err.name)); }
+      return seal(key, clientId, { n: msg.n, ...result });
     }
-    return reply(res, 404, { error: 'path' });
+    return { error: 'kind' };
   }
 
-  function listen(i = 0) {
-    if (server || i >= PORTS.length) return;
-    const s = http.createServer((req, res) => { onRequest(req, res).catch(() => { try { reply(res, 500, { error: 'failed' }); } catch {} }); });
-    s.on('error', () => { s.close(); listen(i + 1); });
-    s.listen(PORTS[i], '127.0.0.1', () => { server = s; port = PORTS[i]; });
+  const sockets = new Set();
+  function onConnection(sock) {
+    sockets.add(sock);
+    sock.on('close', () => sockets.delete(sock));
+    sock.on('error', () => {});
+    const read = nh.frameReader((m) => {
+      const id = m && m.id;
+      onMessage(m).catch(() => ({ error: 'failed' })).then((reply) => {
+        if (!sock.destroyed) sock.write(nh.frame({ id, ...reply }));
+      });
+    }, () => sock.destroy());
+    sock.on('data', read);
   }
-  function stop() { if (server) { server.close(); server = null; port = null; } }
+
+  function listen() {
+    if (server || failed) return;
+    const s = net.createServer(onConnection);
+    s.maxConnections = 16;
+    s.on('error', () => { s.close(); failed = true; o.log('pipe busy'); setTimeout(() => { failed = false; }, 5000); });
+    s.listen(nh.pipePath(pipe), () => { server = s; });
+  }
+  function stop() { if (server) { server.close(); server = null; } for (const s of sockets) s.destroy(); sockets.clear(); }
   function sync() { if (clients().length || (pending && pending.expires > Date.now())) listen(); else stop(); }
 
   return {
@@ -212,7 +221,7 @@ module.exports = function createBridge(o) {
     cancelPairing() { pending = null; sync(); },
     clients: () => clients().map(({ id, name, added }) => ({ id, name, added })),
     remove(id) { keyCache.delete(id); saveClients(clients().filter((c) => c.id !== id)); sync(); },
-    state: () => ({ listening: !!server, port, pairing: !!(pending && pending.expires > Date.now()) }),
+    state: () => ({ listening: !!server, pipe, pairing: !!(pending && pending.expires > Date.now()) }),
     _test: { b32decode, deriveKey, hmac, seal, open, siteOf },
   };
 };

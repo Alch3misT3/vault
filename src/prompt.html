@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Vault Passkey</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="quick.css">
+  <link rel="stylesheet" href="prompt.css">
+</head>
+<body class="quick prompt">
+  <svg class="sprite" aria-hidden="true">
+    <defs>
+      <symbol id="i-key" viewBox="0 0 20 20"><circle cx="7" cy="12.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m9.5 10 6-6m-2.4 2.4 1.9 1.9m-3.9.1 1.4 1.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 20 20"><path d="M4.5 10h10.5m-4.5-4.5L15 10l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-person" viewBox="0 0 20 20"><circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M4 16.5c.8-3 3.1-4.6 6-4.6s5.2 1.6 6 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    </defs>
+  </svg>
+
+  <div id="panel" class="q-panel p-panel">
+    <header class="p-head">
+      <div id="pTile" class="tile p-tile" aria-hidden="true"></div>
+      <div class="p-head-text">
+        <h1 id="pTitle"></h1>
+        <p id="pSub"></p>
+      </div>
+    </header>
+
+    <!-- Vault is locked: unlock first -->
+    <form id="pLock" class="p-body p-lock" hidden autocomplete="off">
+      <div class="lock-field">
+        <input id="ppw" type="password" placeholder="Master password" aria-label="Master password" spellcheck="false">
+        <button id="pUnlockGo" class="round-go" type="submit" aria-label="Unlock"><svg><use href="#i-arrow"/></svg></button>
+      </div>
+      <button id="pPasskey" class="btn-secondary wide pk-unlock" type="button" hidden><svg aria-hidden="true"><use href="#i-key"/></svg>Unlock with Passkey</button>
+      <p id="pErr" class="lock-error" role="alert"></p>
+    </form>
+
+    <!-- Saving a new passkey -->
+    <section id="pCreate" class="p-body" hidden>
+      <div class="p-account">
+        <svg aria-hidden="true"><use href="#i-person"/></svg>
+        <div><strong id="pAccount"></strong><span id="pAccountSub"></span></div>
+      </div>
+      <p id="pExists" class="p-note warn" hidden>A passkey for this account is already saved in Vault.</p>
+      <p id="pCreateNote" class="p-note">Vault keeps the passkey, encrypted with your other passwords. Its key never leaves Vault.</p>
+    </section>
+
+    <!-- Signing in: pick the account -->
+    <section id="pGet" class="p-body" hidden>
+      <ul id="pAccounts" class="p-accounts" role="listbox" aria-label="Accounts"></ul>
+      <p id="pNone" class="p-note" hidden></p>
+    </section>
+
+    <footer class="p-actions">
+      <button id="pOther" type="button" class="btn-plain p-other">Use Another Device</button>
+      <span class="p-gap"></span>
+      <button id="pCancel" type="button" class="btn-secondary">Cancel</button>
+      <button id="pGo" type="button" class="btn-primary">Continue</button>
+    </footer>
+  </div>
+
+  <script src="prompt.js"></script>
+</body>
+</html>

@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { otp } = require('./src/otp.js');
+const security = require('./security');
 
 // Test/dev switches only exist when running from source, never in the built app.
 const DEV = !app.isPackaged;
@@ -21,6 +22,8 @@ const HOTKEY = 'CommandOrControl+Shift+Space';
 // right next to the .exe, so the app and its vault travel together on a USB stick.
 const PORTABLE_DIR = process.env.PORTABLE_EXECUTABLE_DIR || (DEV && process.env.VAULT_PORTABLE_TEST) || null;
 
+security.hardenApp({ dev: DEV });
+
 if (SMOKE) {
   // Never touch the real vault while testing.
   app.setPath('userData', path.join(app.getPath('temp'), 'vault-smoke-' + Date.now()));
@@ -30,36 +33,18 @@ if (SMOKE) {
   app.setPath('userData', dataDir);
 }
 
-// ---------- Crypto -----------------------------------------------------------
-// Master password -> scrypt -> 256-bit key -> AES-256-GCM over the whole vault.
-const KDF = { N: 2 ** 17, r: 8, p: 1, keyLen: 32, maxmem: 256 * 1024 * 1024 };
-
-function deriveKey(password, salt, params = KDF) {
-  return new Promise((resolve, reject) => {
-    crypto.scrypt(password.normalize('NFKC'), salt, params.keyLen || 32,
-      { N: params.N, r: params.r, p: params.p, maxmem: KDF.maxmem },
-      (err, key) => (err ? reject(err) : resolve(key)));
-  });
-}
-
-function encrypt(key, obj) {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const data = Buffer.concat([cipher.update(JSON.stringify(obj), 'utf8'), cipher.final()]);
-  return { iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') };
-}
-
-function decrypt(key, box) {
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(box.iv, 'base64'));
-  decipher.setAuthTag(Buffer.from(box.tag, 'base64'));
-  const out = Buffer.concat([decipher.update(Buffer.from(box.data, 'base64')), decipher.final()]);
-  return JSON.parse(out.toString('utf8'));
-}
+// ---------- Crypto (vaultfile.js) -----------------------------------------------
+// A random 256-bit vault key encrypts the data (AES-256-GCM). It is stored wrapped by the master
+// password (scrypt, N = 2^18) and by each enrolled passkey (HKDF of its WebAuthn PRF output).
+const VF = require('./vaultfile');
 
 // ---------- Vault file -------------------------------------------------------
 const vaultPath = () => path.join(app.getPath('userData'), 'vault.json');
+const v1BackupPath = () => path.join(app.getPath('userData'), 'vault-v1-backup.json');
 
-let session = null; // { key: Buffer, salt: Buffer, kdf }
+// { key: vault key K, extra: the rest of the decrypted payload (website passkeys) }
+// or, only if converting an old vault failed: { key: scrypt key, v1: true, salt, kdf, extra }
+let session = null;
 let logos = null;   // site logos (logos.js), encrypted with a key derived from session.key
 let failedAttempts = 0;
 
@@ -67,23 +52,82 @@ function readFile() {
   return JSON.parse(fs.readFileSync(vaultPath(), 'utf8'));
 }
 
-function writeFileAtomic(contents) {
-  const file = vaultPath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+// Write to a temp file, flush it to disk, then rename over the old one: a crash or power cut
+// leaves either the old vault or the new one, never half of one. Everything written is encrypted.
+function writeDurable(file, text) {
   const tmp = file + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(contents), { mode: 0o600 });
-  if (fs.existsSync(file)) fs.copyFileSync(file, file + '.bak'); // previous version as a safety net
+  const fd = fs.openSync(tmp, 'w', 0o600);
+  try { fs.writeSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, file);
 }
+// bak: 'previous' keeps the last version as vault.json.bak (a safety net);
+// 'same' makes the .bak a copy of the new file (after the keys changed, so an old password or a
+// removed passkey can't open the .bak either).
+function writeFileAtomic(contents, { bak = 'previous' } = {}) {
+  const file = vaultPath();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const text = JSON.stringify(contents);
+  if (bak === 'previous' && fs.existsSync(file)) writeDurable(file + '.bak', fs.readFileSync(file, 'utf8'));
+  writeDurable(file, text);
+  if (bak === 'same') writeDurable(file + '.bak', text);
+}
+
+const payloadOf = (items) => ({ ...(session.extra || {}), items });
 
 function persist(items) {
   if (!session) throw new Error('locked');
-  const box = encrypt(session.key, { items });
-  writeFileAtomic({
-    app: 'vault', version: 1,
-    kdf: { name: 'scrypt', N: session.kdf.N, r: session.kdf.r, p: session.kdf.p, salt: session.salt.toString('base64') },
-    cipher: 'aes-256-gcm', ...box,
-  });
+  if (session.v1) { // old format kept only because converting it failed
+    writeFileAtomic({
+      app: 'vault', version: 1,
+      kdf: { name: 'scrypt', N: session.kdf.N, r: session.kdf.r, p: session.kdf.p, salt: session.salt.toString('base64') },
+      cipher: 'aes-256-gcm', ...VF.sealJson(session.key, payloadOf(items), null),
+    });
+    return;
+  }
+  const cur = readFile();
+  // Same key wraps, new data box (fresh nonce every save).
+  writeFileAtomic({ app: 'vault', version: 2, kdf: cur.kdf, keys: cur.keys, cipher: 'aes-256-gcm', ...VF.sealJson(session.key, payloadOf(items), VF.AAD.data) });
+}
+
+function startSession(key, payload, more) {
+  const { items, ...extra } = payload || {};
+  if (session && session.key !== key) session.key.fill(0); // unlocked again: drop the old copy of the key
+  session = { key, extra, ...(more || {}) };
+  failedAttempts = 0;
+  mainDirty = true; activity();
+  setImmediate(() => updatePrompt()); // a passkey request waiting for the unlock can go on
+  return items || [];
+}
+
+// A fresh version-2 vault around `payload`: new vault key, new salt, current scrypt cost. No passkeys.
+async function newVaultFile(password, payload) {
+  const K = crypto.randomBytes(32);
+  const salt = crypto.randomBytes(16);
+  const pwKey = await VF.deriveKey(password, salt, VF.KDF);
+  try { return { K, file: VF.buildV2({ K, pwKey, salt, kdf: VF.KDF, passkeys: [], payload }) }; } finally { pwKey.fill(0); }
+}
+
+// Old (version 1) vault: keep a copy, convert, and check the result opens before relying on it.
+async function migrateV1(original, password, payload) {
+  const text = fs.readFileSync(vaultPath(), 'utf8');
+  if (!fs.existsSync(v1BackupPath())) writeDurable(v1BackupPath(), text);
+  const { K, file } = await newVaultFile(password, payload);
+  try {
+    writeFileAtomic(file);
+    const back = readFile();
+    const pwKey = await VF.deriveKey(password, Buffer.from(back.kdf.salt, 'base64'), VF.kdfOf(back));
+    const K2 = VF.unwrapWithPassword(back, pwKey);
+    pwKey.fill(0);
+    const p2 = VF.readPayload(back, K2);
+    if (!K2.equals(K) || JSON.stringify(p2) !== JSON.stringify(payload)) throw new Error('check failed');
+    K2.fill(0);
+    return K;
+  } catch (err) {
+    writeDurable(vaultPath(), text); // put the old vault back as it was
+    K.fill(0);
+    logUpdate('[vault] converting to the new format failed: ' + (err && err.name));
+    return null;
+  }
 }
 
 function lock() {
@@ -92,19 +136,58 @@ function lock() {
   session = null;
 }
 
+// Lock and also wipe what the windows held: each window that showed vault data is reloaded in a
+// fresh renderer process, so its memory (accounts, typed text, undo history) goes with the old one.
+// The main window first plays its short lock animation, then asks for this itself ('app:purge').
+let purgeTimer = null;
+function purge(w) {
+  if (!w || w.isDestroyed()) return;
+  const wc = w.webContents;
+  const url = wc.getURL();
+  wc.once('render-process-gone', () => { if (!wc.isDestroyed()) wc.loadURL(url); });
+  wc.forcefullyCrashRenderer();
+}
+function lockVault({ notify = true } = {}) {
+  const was = !!session;
+  lock();
+  if (notify) send('locked');
+  if (quick && !quick.isDestroyed() && quickDirty) { quickDirty = false; hideQuick(); purge(quick); }
+  if (prompt && !prompt.isDestroyed() && promptDirty) {
+    promptDirty = false;
+    purge(prompt); // a pending request stays: the fresh page asks to unlock first
+    if (pkCurrent) prompt.webContents.once('did-finish-load', updatePrompt);
+  }
+  clearTimeout(purgeTimer);
+  if (was) purgeTimer = setTimeout(() => { if (!session && mainDirty) { mainDirty = false; purge(win); } }, 2000);
+}
+let mainDirty = false;  // the main window has shown unlocked data since its last purge
+let quickDirty = false; // the quick panel has listed accounts since its last purge
+
+// Auto-lock after 5 minutes without anyone using Vault (window, quick search or browser).
+const AUTO_LOCK_MS = 5 * 60 * 1000;
+let lastActivity = Date.now();
+const activity = () => { lastActivity = Date.now(); };
+const idle = { ms: AUTO_LOCK_MS };
+setInterval(() => { if (session && Date.now() - lastActivity > idle.ms) lockVault(); }, SMOKE ? 250 : 10_000);
+
 // ---------- Clipboard: copied secrets clear themselves -----------------------
+// (Electron 45's clipboard calls return Promises.) Only a hash of the copied secret is kept, to
+// recognise it later: the clipboard is cleared only if it still holds that secret.
 let clipTimer = null;
-// (Electron 45's clipboard calls return Promises.)
+let clipHash = null;
 const CLIP_CLEAR_MS = SMOKE ? 1500 : 30_000;
+const sha = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
 async function copy(text, isSecret) {
   await clipboard.writeText(String(text));
   clearTimeout(clipTimer);
-  if (isSecret) {
-    clipTimer = setTimeout(async () => {
-      // Only clear if it's still ours; the user may have copied something else since.
-      if ((await clipboard.readText()) === String(text)) clipboard.clear();
-    }, CLIP_CLEAR_MS);
-  }
+  clipHash = isSecret ? sha(text) : null;
+  if (isSecret) clipTimer = setTimeout(clearClipboard, CLIP_CLEAR_MS);
+}
+async function clearClipboard() {
+  clearTimeout(clipTimer);
+  const h = clipHash;
+  clipHash = null;
+  if (h && sha(await clipboard.readText()) === h) await clipboard.clear();
 }
 
 // ---------- Links: only real web addresses go to the browser ----------------
@@ -112,7 +195,7 @@ const opened = []; // smoke-test log
 function openUrl(url) {
   let u;
   try { u = new URL(url); } catch { return false; }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  if (u.protocol !== 'https:' || u.username || u.password) return false; // https only
   if (SMOKE) { opened.push(u.href); return true; }
   shell.openExternal(u.href);
   return true;
@@ -120,6 +203,11 @@ function openUrl(url) {
 
 // ---------- Window -----------------------------------------------------------
 let win = null;
+
+// IPC: every handler belongs to one page; calls from anything else are refused (security.js).
+const guard = security.makeGuard({ 'index.html': () => win, 'quick.html': () => quick, 'prompt.html': () => prompt });
+const handle = (channel, fn) => guard.handle('index.html', channel, fn);
+const handleQuick = (channel, fn) => guard.handle('quick.html', channel, fn);
 
 function themeColors() {
   const dark = nativeTheme.shouldUseDarkColors;
@@ -138,16 +226,9 @@ function createWindow() {
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: c.overlay, symbolColor: c.symbol, height: 44 },
     icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      spellcheck: false,
-      devTools: DEV,
-    },
+    webPreferences: security.webPrefs({ preload: path.join(__dirname, 'preload.js'), session: security.appSession(), devTools: DEV }),
   });
-  win.loadFile(path.join(__dirname, 'src', 'index.html'));
+  win.loadURL(security.pageUrl('index.html'));
   if (!SMOKE && !START_HIDDEN) win.once('ready-to-show', () => win.show());
 
   // Closing the window keeps Vault in the notification area (Quit is in the tray menu and File menu).
@@ -161,8 +242,7 @@ function createWindow() {
     }
   });
 
-  // Nothing inside the app may navigate away or spawn windows.
-  win.webContents.on('will-navigate', (e) => e.preventDefault());
+  // Nothing inside the app may navigate away or spawn windows (security.js); links go to the browser.
   win.webContents.setWindowOpenHandler(({ url }) => { openUrl(url); return { action: 'deny' }; });
 }
 
@@ -192,9 +272,10 @@ function buildMenu() {
         { label: 'Password Generator…', accelerator: 'CmdOrCtrl+G', click: () => send('menu', 'generator') },
         { label: 'Connect a Browser…', click: () => send('menu', 'browser') },
         { label: 'Change Master Password…', click: () => send('menu', 'change-password') },
+        { label: 'Unlock With Passkey…', click: () => send('menu', 'passkeys') },
         { label: 'Show Vault File', click: () => shell.showItemInFolder(vaultPath()) },
         { type: 'separator' },
-        { label: 'Lock Vault', accelerator: 'CmdOrCtrl+L', click: () => { lock(); send('locked'); } },
+        { label: 'Lock Vault', accelerator: 'CmdOrCtrl+L', click: () => lockVault() },
         { label: 'Quit Vault', accelerator: 'CmdOrCtrl+Q', click: () => { quitting = true; app.quit(); } },
       ],
     },
@@ -283,88 +364,169 @@ function setupUpdates() {
   setInterval(checkForUpdates, 6 * 60 * 60 * 1000);
 }
 
-ipcMain.handle('update:check', () => checkForUpdates());
-ipcMain.handle('update:state', () => ({ ...update }));
-ipcMain.handle('update:install', () => {
+handle('update:check', () => checkForUpdates());
+handle('update:state', () => ({ ...update }));
+handle('update:install', () => {
   if (update.status === 'ready' && autoUpdater) { lock(); quitting = true; autoUpdater.quitAndInstall(true, true); return true; }
   if (update.status === 'available' && update.url) { openUrl(update.url); return true; }
   return false;
 });
 
 // ---------- IPC --------------------------------------------------------------
-ipcMain.handle('vault:status', () => ({ exists: fs.existsSync(vaultPath()), unlocked: !!session }));
+// The lock screen needs to know which passkeys can unlock (ids, PRF salts: neither is secret).
+function unlockPasskeys() {
+  try { const f = readFile(); return f.version === 2 && f.keys && Array.isArray(f.keys.passkeys) ? f.keys.passkeys : []; } catch { return []; }
+}
+handle('vault:status', () => ({
+  exists: fs.existsSync(vaultPath()), unlocked: !!session,
+  passkeys: unlockPasskeys().map((p) => ({ id: p.id, salt: p.salt, transports: p.transports || [] })),
+}));
 
-ipcMain.handle('vault:create', async (_e, password) => {
+handle('vault:create', async (_e, password) => {
   if (fs.existsSync(vaultPath())) return { ok: false, error: 'exists' };
   if (typeof password !== 'string' || password.length < 8) return { ok: false, error: 'short' };
-  const salt = crypto.randomBytes(16);
-  session = { key: await deriveKey(password, salt), salt, kdf: { N: KDF.N, r: KDF.r, p: KDF.p } };
-  persist([]);
+  const { K, file } = await newVaultFile(password, { items: [] });
+  writeFileAtomic(file);
+  startSession(K, { items: [] });
   return { ok: true, items: [] };
 });
 
-ipcMain.handle('vault:unlock', (_e, password) => unlock(password));
+handle('vault:unlock', (_e, password) => unlock(password));
+
+async function backoff() {
+  // Gentle back-off after repeated wrong guesses.
+  if (failedAttempts > 3) await new Promise((r) => setTimeout(r, Math.min(8000, 500 * 2 ** (failedAttempts - 4))));
+}
 
 async function unlock(password) {
   if (typeof password !== 'string') return { ok: false, error: 'wrong' };
-  // Gentle back-off after repeated wrong guesses.
-  if (failedAttempts > 3) await new Promise((r) => setTimeout(r, Math.min(8000, 500 * 2 ** (failedAttempts - 4))));
+  await backoff();
   let file;
   try { file = readFile(); } catch { return { ok: false, error: 'missing' }; }
-  const salt = Buffer.from(file.kdf.salt, 'base64');
-  const kdf = { N: file.kdf.N, r: file.kdf.r, p: file.kdf.p };
-  const key = await deriveKey(password, salt, kdf);
-  try {
-    const { items } = decrypt(key, file);
-    session = { key, salt, kdf };
-    failedAttempts = 0;
-    return { ok: true, items };
-  } catch {
-    key.fill(0);
-    failedAttempts++;
-    return { ok: false, error: 'wrong' };
+  let key;
+  try { key = await VF.deriveKey(password, Buffer.from(file.kdf.salt, 'base64'), VF.kdfOf(file)); } catch { return { ok: false, error: 'damaged' }; }
+  if (file.version === 2) {
+    let K, payload;
+    try { K = VF.unwrapWithPassword(file, key); payload = VF.readPayload(file, K); } catch { failedAttempts++; return { ok: false, error: 'wrong' }; } finally { key.fill(0); }
+    return { ok: true, items: startSession(K, payload) };
   }
+  // Version 1 (Vault 1.3 and older): open it, then convert it (a copy of the old file is kept).
+  let payload;
+  try { payload = VF.readV1(file, key); } catch { key.fill(0); failedAttempts++; return { ok: false, error: 'wrong' }; }
+  const K = await migrateV1(file, password, payload);
+  if (!K) return { ok: true, items: startSession(key, payload, { v1: true, salt: Buffer.from(file.kdf.salt, 'base64'), kdf: VF.kdfOf(file) }) };
+  const items = startSession(K, payload);
+  try { if (logos) logos.rekey(key); } finally { key.fill(0); } // the logo cache was sealed with the old key
+  return { ok: true, items, migrated: true };
+}
+
+handle('vault:unlock-passkey', (_e, id, prf) => unlockWithPasskey(id, prf));
+async function unlockWithPasskey(id, prfB64) {
+  if (session) return { ok: true, items: sessionItems() };
+  const entry = unlockPasskeys().find((p) => p.id === id);
+  const prf = typeof prfB64 === 'string' ? Buffer.from(prfB64, 'base64') : null;
+  if (!entry || !prf || prf.length !== 32) return { ok: false, error: 'unknown' };
+  await backoff();
+  let K, payload;
+  try { K = VF.unwrapWithPasskey(entry, prf); payload = VF.readPayload(readFile(), K); } catch { failedAttempts++; return { ok: false, error: 'wrong' }; } finally { prf.fill(0); }
+  return { ok: true, items: startSession(K, payload) };
 }
 
 // The decrypted vault as last saved by the window (the quick-search panel reads it from here).
-function sessionItems() {
+function sessionPayload() {
   if (!session) return null;
-  try { return decrypt(session.key, readFile()).items || []; } catch { return null; }
+  try { const f = readFile(); return session.v1 ? VF.readV1(f, session.key) : VF.readPayload(f, session.key); } catch { return null; }
 }
+function sessionItems() { const p = sessionPayload(); return p ? p.items || [] : null; }
 const nodeHmac = (alg, key, msg) => new Uint8Array(crypto.createHmac(alg.toLowerCase(), Buffer.from(key)).update(Buffer.from(msg)).digest());
 
-ipcMain.handle('vault:save', (_e, items) => {
+handle('vault:save', (_e, items) => {
   if (!session) return { ok: false, error: 'locked' };
   if (!Array.isArray(items)) return { ok: false, error: 'bad' };
-  try { persist(items); return { ok: true }; } catch (err) { return { ok: false, error: String(err.message || err) }; }
+  try { persist(items); return { ok: true }; } catch { return { ok: false, error: 'failed' }; }
 });
 
-ipcMain.handle('vault:change-password', async (_e, current, next, items) => {
+// A new master password gets a new vault key too, so an old copy of the file plus the old password
+// opens nothing current. Passkeys wrapped the old key, so they have to be added again.
+handle('vault:change-password', async (_e, current, next, items) => {
   if (!session) return { ok: false, error: 'locked' };
   if (typeof next !== 'string' || next.length < 8) return { ok: false, error: 'short' };
+  if (!Array.isArray(items)) return { ok: false, error: 'bad' };
   if (!(await verifyPassword(String(current)))) return { ok: false, error: 'wrong' };
-  const salt = crypto.randomBytes(16);
-  const key = await deriveKey(next, salt);
-  const oldKey = Buffer.from(session.key);
-  session.key.fill(0);
-  session = { key, salt, kdf: { N: KDF.N, r: KDF.r, p: KDF.p } };
-  persist(items);
+  const removed = unlockPasskeys().length;
+  const { K, file } = await newVaultFile(next, payloadOf(items));
+  writeFileAtomic(file, { bak: 'same' });
+  try { fs.rmSync(v1BackupPath(), { force: true }); } catch {}
+  const oldKey = session.key;
+  session = { key: K, extra: session.extra };
   try { if (logos) logos.rekey(oldKey); } finally { oldKey.fill(0); }
-  return { ok: true };
+  return { ok: true, passkeysRemoved: removed };
 });
 
 async function verifyPassword(pw) {
   if (!session || typeof pw !== 'string') return false;
-  const check = await deriveKey(pw, session.salt, session.kdf);
-  const same = crypto.timingSafeEqual(check, session.key);
-  check.fill(0);
-  return same;
+  let f; try { f = readFile(); } catch { return false; }
+  let key; try { key = await VF.deriveKey(pw, Buffer.from(f.kdf.salt, 'base64'), VF.kdfOf(f)); } catch { return false; }
+  try {
+    if (session.v1) return crypto.timingSafeEqual(key, session.key);
+    const K = VF.unwrapWithPassword(f, key);
+    const same = crypto.timingSafeEqual(K, session.key);
+    K.fill(0);
+    return same;
+  } catch { return false; } finally { key.fill(0); }
 }
+
+// ---- Passkeys that unlock Vault (WebAuthn PRF) --------------------------------------
+// The window runs the WebAuthn ceremony (Windows shows its own dialog: phone by QR code,
+// Windows Hello PIN or a USB security key); Vault keeps only the vault key wrapped by the PRF output.
+const RP_ID = security.HOST;
+let pendingAdd = null; // { salt, name, expires } after the master password was checked
+const listPasskeys = () => unlockPasskeys().map(({ id, name, added, transports }) => ({ id, name, added, transports }));
+function setUnlockPasskeys(fn) {
+  const f = readFile();
+  if (f.version !== 2) throw new Error('old format');
+  f.keys.passkeys = fn(f.keys.passkeys || []);
+  writeFileAtomic(f, { bak: 'same' });
+}
+
+handle('passkeys:list', () => (session ? listPasskeys() : null));
+handle('passkeys:begin', async (_e, password, name) => {
+  if (!session) return { error: 'locked' };
+  if (session.v1) return { error: 'old-format' };
+  if (!(await verifyPassword(String(password)))) return { error: 'wrong' };
+  const label = String(name || '').trim().slice(0, 40) || 'Passkey';
+  pendingAdd = { salt: crypto.randomBytes(32), name: label, expires: Date.now() + 5 * 60 * 1000 };
+  const host = require('os').hostname();
+  return {
+    rpId: RP_ID, rpName: 'Vault',
+    userId: VF.b64(crypto.randomBytes(16)), userName: 'Vault on ' + host, displayName: 'Vault on ' + host,
+    challenge: VF.b64(crypto.randomBytes(32)), salt: VF.b64(pendingAdd.salt),
+    exclude: unlockPasskeys().map((p) => ({ id: p.id, transports: p.transports || [] })),
+  };
+});
+handle('passkeys:finish', (_e, id, transports, prfB64) => {
+  if (!session || session.v1) return { error: 'locked' };
+  if (!pendingAdd || pendingAdd.expires < Date.now()) { pendingAdd = null; return { error: 'expired' }; }
+  const prf = typeof prfB64 === 'string' ? Buffer.from(prfB64, 'base64') : null;
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{16,1400}$/.test(id) || !prf || prf.length !== 32) return { error: 'bad' };
+  const tr = Array.isArray(transports) ? transports.filter((t) => /^(usb|nfc|ble|hybrid|internal|smart-card)$/.test(t)) : [];
+  const entry = VF.passkeyEntry({ id, name: pendingAdd.name, transports: tr, salt: pendingAdd.salt, prf, K: session.key });
+  prf.fill(0);
+  pendingAdd = null;
+  setUnlockPasskeys((list) => [...list.filter((p) => p.id !== id), entry]);
+  return { ok: true, list: listPasskeys() };
+});
+handle('passkeys:cancel', () => { pendingAdd = null; return true; });
+handle('passkeys:remove', (_e, id) => {
+  if (!session || session.v1) return { error: 'locked' };
+  setUnlockPasskeys((list) => list.filter((p) => p.id !== String(id)));
+  return { ok: true, list: listPasskeys() };
+});
 
 // ---- Import / export ---------------------------------------------------------
 const smokeIO = { importPath: null, exportDir: null };
 
-ipcMain.handle('file:pick-import', async () => {
+handle('file:pick-import', async () => {
   let file = smokeIO.importPath;
   if (!SMOKE) {
     const r = await dialog.showOpenDialog(win, {
@@ -382,7 +544,7 @@ ipcMain.handle('file:pick-import', async () => {
 });
 
 // kind: 'csv' | 'json' | 'backup'
-ipcMain.handle('file:export', async (_e, kind, contents, password) => {
+handle('file:export', async (_e, kind, contents, password) => {
   if (!(await verifyPassword(password))) return { ok: false, error: 'wrong' };
   const stamp = new Date().toISOString().slice(0, 10);
   const names = { csv: `Vault Passwords ${stamp}.csv`, json: `Vault Passwords ${stamp}.json`, backup: `Vault Backup ${stamp}.vault` };
@@ -405,7 +567,7 @@ ipcMain.handle('file:export', async (_e, kind, contents, password) => {
 });
 
 // Restore an encrypted backup made by this app: it replaces the current vault.
-ipcMain.handle('file:restore', async () => {
+handle('file:restore', async () => {
   let file = smokeIO.importPath;
   if (!SMOKE) {
     const r = await dialog.showOpenDialog(win, { title: 'Restore Backup', buttonLabel: 'Restore', filters: [{ name: 'Vault backup', extensions: ['vault', 'json'] }], properties: ['openFile'] });
@@ -414,30 +576,46 @@ ipcMain.handle('file:restore', async () => {
   }
   try {
     const f = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (f.app !== 'vault' || !f.kdf || !f.data) return { ok: false, error: 'That file is not a Vault backup.' };
+    if (f.app !== 'vault' || !f.kdf || !f.data || (f.version === 2 && !(f.keys && f.keys.password))) return { ok: false, error: 'That file is not a Vault backup.' };
     if (logos) logos.reset();
     writeFileAtomic(f);
-    lock();
+    lockVault({ notify: false });
     return { ok: true };
   } catch { return { ok: false, error: 'That file is not a Vault backup.' }; }
 });
 
-ipcMain.handle('vault:lock', () => { lock(); return true; });
-ipcMain.handle('clip:copy', async (_e, text, isSecret) => { await copy(text, !!isSecret); return true; });
-ipcMain.handle('open:url', (_e, url) => openUrl(url));
+handle('vault:lock', () => { lockVault({ notify: false }); return true; });
+handle('app:purge', () => { if (!session && mainDirty) { mainDirty = false; clearTimeout(purgeTimer); setImmediate(() => purge(win)); } return true; });
+handle('app:activity', () => { activity(); return true; });
+// The window started over while Vault was (again) unlocked: show the open vault.
+handle('vault:resume', () => (session ? { ok: true, items: sessionItems() || [] } : { ok: false }));
+// A short message for the window to show after it starts over (e.g. "Backup restored").
+let note = null;
+handle('app:note', (_e, text) => { note = String(text).slice(0, 120); return true; });
+handle('app:take-note', () => { const n = note; note = null; return n; });
+handle('clip:copy', async (_e, text, isSecret) => { await copy(text, !!isSecret); return true; });
+handle('open:url', (_e, url) => openUrl(url));
 
 // The ••• and right-click menus are drawn by the window itself (Liquid Glass); these do what they can't.
-ipcMain.handle('app:prefs', () => ({ openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false }));
-ipcMain.handle('app:set-pref', (_e, key, value) => {
+const appPrefs = () => ({ openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false, gen: prefs().gen || null });
+handle('app:prefs', () => appPrefs());
+handle('app:set-pref', (_e, key, value) => {
   if (key === 'openAtLogin') setOpenAtLogin(!!value);
   if (key === 'logos') logos.setEnabled(!!value);
-  return { openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false };
+  if (key === 'gen') setPref('gen', cleanGen(value));
+  return appPrefs();
 });
-ipcMain.handle('app:quick', () => { showQuick(); return true; });
-ipcMain.handle('app:show-file', () => { if (!SMOKE) shell.showItemInFolder(vaultPath()); return true; });
+// Password generator settings (not secret).
+function cleanGen(v) {
+  const o = v && typeof v === 'object' ? v : {};
+  const int = (x, lo, hi, d) => (Number.isInteger(x) && x >= lo && x <= hi ? x : d);
+  return { style: ['apple', 'random', 'words'].includes(o.style) ? o.style : 'apple', length: int(o.length, 8, 64, 20), words: int(o.words, 3, 10, 5), symbols: !!o.symbols };
+}
+handle('app:quick', () => { showQuick(); return true; });
+handle('app:show-file', () => { if (!SMOKE) shell.showItemInFolder(vaultPath()); return true; });
 
-powerMonitor.on('lock-screen', () => { if (session) { lock(); send('locked'); } });
-powerMonitor.on('suspend', () => { if (session) { lock(); send('locked'); } });
+// Windows locked (Win+L), going to sleep or hibernating: lock straight away.
+for (const ev of ['lock-screen', 'suspend', 'shutdown']) powerMonitor.on(ev, () => { if (session) lockVault(); });
 
 // ---------- Quick search (Ctrl+Shift+Space from anywhere) ----------------------
 // A small panel that finds an account and copies its password. It never receives
@@ -450,14 +628,9 @@ function createQuick() {
     fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, title: 'Vault Quick Search',
     backgroundColor: '#00000000', backgroundMaterial: 'acrylic',
     icon: path.join(__dirname, 'build', 'icon.png'),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-quick.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, devTools: DEV,
-    },
+    webPreferences: security.webPrefs({ preload: path.join(__dirname, 'preload-quick.js'), session: security.appSession(), devTools: DEV }),
   });
-  quick.loadFile(path.join(__dirname, 'src', 'quick.html'));
-  quick.webContents.on('will-navigate', (e) => e.preventDefault());
-  quick.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  quick.loadURL(security.pageUrl('quick.html'));
   quick.on('blur', () => { if (!SMOKE) hideQuick(); });
   quick.on('close', (e) => { if (!quitting) { e.preventDefault(); hideQuick(); } });
 }
@@ -499,10 +672,11 @@ function hideQuick() {
 const fromQuick = (e) => quick && !quick.isDestroyed() && e.sender === quick.webContents;
 const quickItem = (id) => (sessionItems() || []).find((x) => x.id === id && !x.deletedAt);
 
-ipcMain.handle('quick:list', (e) => {
+handleQuick('quick:list', (e) => {
   if (!fromQuick(e)) return null;
   const items = sessionItems();
   if (!items) return { locked: true, exists: fs.existsSync(vaultPath()) };
+  quickDirty = true; activity();
   send('activity');
   return {
     locked: false,
@@ -512,17 +686,18 @@ ipcMain.handle('quick:list', (e) => {
     })),
   };
 });
-ipcMain.handle('quick:unlock', async (e, password) => {
+handleQuick('quick:unlock', async (e, password) => {
   if (!fromQuick(e)) return { ok: false };
   if (session) return { ok: true };
   const r = await unlock(password);
   if (r.ok) send('unlocked-elsewhere', r.items);
   return { ok: r.ok, error: r.error };
 });
-ipcMain.handle('quick:copy', async (e, id, what) => {
+handleQuick('quick:copy', async (e, id, what) => {
   if (!fromQuick(e)) return { ok: false };
   const it = quickItem(id);
   if (!it) return { ok: false };
+  activity();
   send('activity');
   if (what === 'username' && it.username) { await copy(it.username, false); return { ok: true }; }
   if (what === 'password' && it.password) { await copy(it.password, true); return { ok: true }; }
@@ -534,7 +709,7 @@ ipcMain.handle('quick:copy', async (e, id, what) => {
   return { ok: false };
 });
 // The current code for one account (shown on the selected row), not the secret behind it.
-ipcMain.handle('quick:code', async (e, id) => {
+handleQuick('quick:code', async (e, id) => {
   if (!fromQuick(e)) return null;
   const it = quickItem(id);
   const f = it && otp.otpField(it);
@@ -542,14 +717,22 @@ ipcMain.handle('quick:code', async (e, id) => {
   if (!cfg) return null;
   return { code: otp.pretty(await otp.code(cfg, nodeHmac)), left: otp.remaining(cfg), period: cfg.period };
 });
-ipcMain.handle('quick:open', (e, url) => fromQuick(e) && openUrl(url));
-ipcMain.handle('quick:hide', (e) => { if (fromQuick(e)) hideQuick(); });
-ipcMain.handle('quick:main', (e) => { if (fromQuick(e)) { hideQuick(); showMain(); } });
+handleQuick('quick:open', (e, url) => fromQuick(e) && openUrl(url));
+handleQuick('quick:hide', (e) => { if (fromQuick(e)) hideQuick(); });
+handleQuick('quick:main', (e) => { if (fromQuick(e)) { hideQuick(); showMain(); } });
 
 // ---------- Notification area: Vault keeps running so the hotkey works ---------
 let tray = null;
 let quitting = false;
 app.on('before-quit', () => { quitting = true; });
+// A copied password must not outlive Vault on the clipboard: clear it (if still ours) before quitting.
+let clipCleared = false;
+app.on('will-quit', (e) => {
+  if (clipCleared || !clipHash) return;
+  e.preventDefault();
+  clipCleared = true;
+  clearClipboard().catch(() => {}).finally(() => app.quit());
+});
 
 function showMain() {
   if (!win || win.isDestroyed()) return;
@@ -571,7 +754,7 @@ function setupTray() {
     { label: 'Open Vault', click: showMain },
     { label: 'Quick Search', accelerator: HOTKEY, registerAccelerator: false, click: showQuick },
     { type: 'separator' },
-    { label: 'Lock Vault', click: () => { lock(); send('locked'); } },
+    { label: 'Lock Vault', click: () => lockVault() },
     { label: 'Quit Vault', click: () => { quitting = true; app.quit(); } },
   ]));
   tray.on('click', showMain);
@@ -583,6 +766,195 @@ function setOpenAtLogin(on) {
   if (canOpenAtLogin()) app.setLoginItemSettings({ openAtLogin: !!on, args: ['--hidden'] });
 }
 
+// ---------- Passkeys for websites (through the browser extension) ---------------
+// The extension hands Vault a site's WebAuthn request. Vault checks the origin and rpId, shows its own
+// confirmation (which site, which account; unlock first if locked), and signs here: the private key
+// never leaves this process. "Use Another Device" sends the page back to the browser's own flow.
+const PK = require('./passkeys');
+const NOT_ALLOWED = { error: 'NotAllowedError', message: 'The operation either timed out or was not allowed.' };
+const sitePasskeys = () => (session && session.extra && Array.isArray(session.extra.passkeys) ? session.extra.passkeys : []);
+// Saves the passkey list with the accounts as they are on disk. If the file can't be read right now,
+// nothing is written (never an empty account list) and the caller gets false.
+function saveSitePasskeys(list) {
+  const items = sessionItems();
+  if (!session || !items) return false;
+  const before = session.extra;
+  session.extra = { ...(session.extra || {}), passkeys: list };
+  try { persist(items); } catch { session.extra = before; return false; }
+  send('site-passkeys');
+  return true;
+}
+
+handle('passkeys:site-list', () => (session ? sitePasskeys().map(({ id, rpId, userName, displayName, created, lastUsed }) => ({ id, rpId, userName, displayName, created, lastUsed })) : null));
+handle('passkeys:site-delete', (_e, id) => {
+  if (!session) return { ok: false };
+  const list = sitePasskeys();
+  if (!list.some((p) => p.id === id)) return { ok: false };
+  return { ok: saveSitePasskeys(list.filter((p) => p.id !== id)) };
+});
+
+const pkQueue = [];
+let pkCurrent = null;
+let prompt = null;
+let promptDirty = false; // the prompt has shown account names since its last purge
+
+function passkeyRequest({ op, origin, options, requestId, browser }) {
+  return new Promise((resolve) => {
+    const parsed = op === 'create' ? PK.parseCreate(options) : op === 'get' ? PK.parseGet(options) : { error: 'TypeError' };
+    if (parsed.error) return resolve({ fallback: true });
+    const rp = PK.checkRp(String(origin || ''), parsed.rpId);
+    if (!rp.ok) return resolve({ error: 'SecurityError', message: 'This site may not use a passkey for that domain.' });
+    if (op === 'create' && !parsed.es256) return resolve({ fallback: true }); // the site doesn't accept Vault's key type
+    const req = { op, origin, host: rp.host, rpId: rp.rpId, parsed, requestId, browser: String(browser || 'Browser').slice(0, 40), resolve, at: Date.now() };
+    // Signing in, unlocked, nothing saved for this site: let the browser handle it without asking.
+    if (op === 'get' && session && !matchesFor(req).length) return resolve({ fallback: true });
+    req.timer = setTimeout(() => finish(req, NOT_ALLOWED), 5 * 60 * 1000);
+    pkQueue.push(req);
+    nextPasskeyRequest();
+  });
+}
+
+function matchesFor(req) {
+  const allow = req.parsed.allow || [];
+  return sitePasskeys().filter((p) => p.rpId === req.rpId && (!allow.length || allow.includes(p.credentialId)));
+}
+
+function promptState() {
+  const r = pkCurrent;
+  if (!r) return null;
+  const st = { op: r.op, site: r.host, rpId: r.rpId, browser: r.browser, locked: !session };
+  if (!session) st.passkeys = unlockPasskeys().map((p) => ({ id: p.id, salt: p.salt, transports: p.transports || [] }));
+  else if (r.op === 'create') {
+    st.rpName = r.parsed.rpName;
+    st.account = r.parsed.user.name || r.parsed.user.displayName;
+    st.displayName = r.parsed.user.displayName;
+    st.exists = sitePasskeys().some((p) => p.rpId === r.rpId && (r.parsed.exclude.includes(p.credentialId) || p.userHandle === r.parsed.user.id));
+  } else {
+    st.accounts = matchesFor(r).map((p) => ({ id: p.id, userName: p.userName, displayName: p.displayName, lastUsed: p.lastUsed, created: p.created }));
+  }
+  return st;
+}
+
+function nextPasskeyRequest() {
+  if (pkCurrent || !pkQueue.length) return;
+  pkCurrent = pkQueue.shift();
+  showPrompt();
+}
+
+function finish(req, result) {
+  clearTimeout(req.timer);
+  const i = pkQueue.indexOf(req);
+  if (i >= 0) pkQueue.splice(i, 1);
+  req.resolve(result);
+  if (pkCurrent === req) {
+    pkCurrent = null;
+    hidePrompt();
+    setTimeout(nextPasskeyRequest, 200);
+  }
+}
+
+// The page gave up (its AbortSignal fired, or the tab went away).
+function passkeyCancel(requestId) {
+  const req = (pkCurrent && pkCurrent.requestId === requestId) ? pkCurrent : pkQueue.find((r) => r.requestId === requestId);
+  if (req) finish(req, { error: 'AbortError', message: 'The operation was aborted.' });
+}
+
+function answerPasskey(action, accountId) {
+  const req = pkCurrent;
+  if (!req) return { ok: false };
+  if (action === 'other') { finish(req, { fallback: true }); return { ok: true }; }
+  if (action === 'cancel') { finish(req, NOT_ALLOWED); return { ok: true }; }
+  if (action !== 'confirm' || !session) return { ok: false };
+  activity();
+  if (req.op === 'create') {
+    const st = promptState();
+    if (st.exists) {
+      finish(req, { error: 'InvalidStateError', message: 'A passkey for this account is already saved in Vault.' });
+      return { ok: true };
+    }
+    const { entry, response } = PK.makeCredential({ rpId: req.rpId, origin: req.origin, user: req.parsed.user, challenge: req.parsed.challenge, credProps: req.parsed.credProps });
+    if (!saveSitePasskeys([...sitePasskeys(), entry])) { logUpdate('[passkeys] could not save'); finish(req, NOT_ALLOWED); return { ok: true }; }
+    finish(req, { credential: response });
+    return { ok: true };
+  }
+  const entry = matchesFor(req).find((p) => p.id === accountId);
+  if (!entry) return { ok: false };
+  const { counter, response } = PK.getAssertion(entry, { origin: req.origin, challenge: req.parsed.challenge });
+  // The new counter is stored before the site gets the signature.
+  if (!saveSitePasskeys(sitePasskeys().map((p) => (p.id === entry.id ? { ...p, signCount: counter, lastUsed: Date.now() } : p)))) { logUpdate('[passkeys] could not save'); finish(req, NOT_ALLOWED); return { ok: true }; }
+  finish(req, { credential: response });
+  return { ok: true };
+}
+
+// ---- the confirmation window ----
+function createPrompt() {
+  prompt = new BrowserWindow({
+    width: 440, height: 360, show: false, frame: false, resizable: false, maximizable: false, minimizable: false,
+    fullscreenable: false, skipTaskbar: false, alwaysOnTop: true, title: 'Vault Passkey',
+    backgroundColor: '#00000000', backgroundMaterial: 'acrylic',
+    icon: path.join(__dirname, 'build', 'icon.png'),
+    webPreferences: security.webPrefs({ preload: path.join(__dirname, 'preload-prompt.js'), session: security.appSession(), devTools: DEV }),
+  });
+  prompt.loadURL(security.pageUrl('prompt.html'));
+  prompt.on('close', (e) => { if (!quitting) { e.preventDefault(); if (pkCurrent) finish(pkCurrent, NOT_ALLOWED); else hidePrompt(); } });
+}
+function showPrompt() {
+  if (!prompt || prompt.isDestroyed()) createPrompt();
+  promptDirty = true;
+  const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const [w, h] = prompt.getSize();
+  prompt.setPosition(Math.round(workArea.x + (workArea.width - w) / 2), Math.round(workArea.y + workArea.height * 0.2));
+  const go = () => {
+    prompt.webContents.send('prompt:update', promptState());
+    if (SMOKE) prompt.showInactive(); else { prompt.show(); prompt.focus(); }
+  };
+  if (prompt.webContents.isLoading()) prompt.webContents.once('did-finish-load', go); else go();
+}
+function hidePrompt() { if (prompt && !prompt.isDestroyed() && prompt.isVisible()) prompt.hide(); }
+const updatePrompt = () => { if (prompt && !prompt.isDestroyed() && pkCurrent) prompt.webContents.send('prompt:update', promptState()); };
+
+const handlePrompt = (channel, fn) => guard.handle('prompt.html', channel, fn);
+handlePrompt('prompt:state', () => promptState());
+handlePrompt('prompt:answer', (_e, action, accountId) => answerPasskey(String(action), String(accountId || '')));
+handlePrompt('prompt:unlock', async (_e, password) => {
+  if (!session) {
+    const r = await unlock(password);
+    if (!r.ok) return { ok: false, error: r.error };
+    send('unlocked-elsewhere', r.items);
+  }
+  return afterPromptUnlock();
+});
+handlePrompt('prompt:unlock-passkey', async (_e, id, prf) => {
+  if (!session) {
+    const r = await unlockWithPasskey(id, prf);
+    if (!r.ok) return { ok: false, error: r.error };
+    send('unlocked-elsewhere', r.items);
+  }
+  return afterPromptUnlock();
+});
+// Unlocked from the prompt: if Vault has nothing for this site, go straight to the browser's own flow.
+function afterPromptUnlock() {
+  const req = pkCurrent;
+  if (req && req.op === 'get' && !matchesFor(req).length) return { ok: true, state: { ...promptState(), none: true } };
+  return { ok: true, state: promptState() };
+}
+
+// ---- registering the native messaging host with the browsers ----
+async function registerNativeHost() {
+  try {
+    const nh = require('./nativehost');
+    const dir = path.join(app.getPath('userData'), 'NativeMessagingHosts');
+    fs.mkdirSync(dir, { recursive: true });
+    // A copy next to Vault's data, so the portable edition (unpacked to a temp folder) works too.
+    const src = app.isPackaged ? path.join(process.resourcesPath, 'vault-native-host.exe') : require('./scripts/build-host')();
+    const exe = path.join(dir, 'vault-native-host.exe');
+    const bytes = fs.readFileSync(src);
+    if (!fs.existsSync(exe) || !fs.readFileSync(exe).equals(bytes)) fs.writeFileSync(exe, bytes);
+    const extId = nh.extensionId(path.join(__dirname, 'browser-extension', 'manifest.json'));
+    if (!(await nh.register({ dir, exe, extId }))) logUpdate('[browser] could not register the native host');
+  } catch (err) { logUpdate('[browser] native host setup failed: ' + (err && err.name)); }
+}
+
 // ---------- Browser extension bridge -------------------------------------------
 let bridge = null;
 function setupBridge() {
@@ -592,9 +964,11 @@ function setupBridge() {
     isUnlocked: () => !!session,
     exists: () => fs.existsSync(vaultPath()),
     unlock: async (pw) => { const r = await unlock(pw); if (r.ok) send('unlocked-elsewhere', r.items); return r; },
-    onActivity: () => send('activity'),
+    onActivity: () => { activity(); send('activity'); },
     onChange: () => send('bridge', bridgeState()),
-    log: (m) => logUpdate('[browser] ' + m),
+    passkeyRequest, passkeyCancel,
+    pipeName: SMOKE ? 'vault-browser-smoke-' + process.pid : undefined,
+    log: (m) => logUpdate('[browser] ' + m), // fixed messages only, never request contents
   });
   bridge.start();
 }
@@ -615,11 +989,21 @@ function extensionFolder() {
   return target;
 }
 
-ipcMain.handle('bridge:state', () => bridgeState());
-ipcMain.handle('bridge:pair', () => (bridge ? bridge.startPairing() : null));
-ipcMain.handle('bridge:cancel', () => { if (bridge) bridge.cancelPairing(); return true; });
-ipcMain.handle('bridge:remove', (_e, id) => { if (bridge) bridge.remove(String(id)); return bridgeState(); });
-ipcMain.handle('bridge:folder', () => { try { const dir = extensionFolder(); if (!SMOKE) shell.openPath(dir); return dir; } catch (err) { return null; } });
+handle('bridge:state', () => bridgeState());
+handle('bridge:pair', () => (bridge ? bridge.startPairing() : null));
+handle('bridge:cancel', () => { if (bridge) bridge.cancelPairing(); return true; });
+handle('bridge:remove', (_e, id) => { if (bridge) bridge.remove(String(id)); return bridgeState(); });
+handle('bridge:folder', () => { try { const dir = extensionFolder(); if (!SMOKE) shell.openPath(dir); return dir; } catch (err) { return null; } });
+
+// ---------- Crash reports ------------------------------------------------------
+// Vault never starts Electron's crash reporter, so it writes no crash dumps. Windows Error Reporting
+// could still save one (with memory in it) if Vault crashed: tell Windows to leave Vault.exe out.
+function keepOutOfCrashReports() {
+  if (!app.isPackaged || prefs().werExcluded === process.execPath) return;
+  const exe = path.basename(process.execPath);
+  require('child_process').execFile('reg.exe', ['add', String.raw`HKCU\Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications`, '/v', exe, '/t', 'REG_DWORD', '/d', '1', '/f'],
+    { windowsHide: true }, (err) => { if (!err) setPref('werExcluded', process.execPath); });
+}
 
 // ---------- Boot -------------------------------------------------------------
 app.setAppUserModelId('local.vault.app');
@@ -631,13 +1015,19 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
   app.whenReady().then(async () => {
     if (MAKE_ICON) return require('./scripts/make-icon')(app, BrowserWindow);
     buildMenu();
+    keepOutOfCrashReports();
     logos = require('./logos')({
-      app, BrowserWindow, ipcMain, getKey: () => (session ? session.key : null), prefs, setPref, send,
+      app, BrowserWindow, handle, getKey: () => (session ? session.key : null), prefs, setPref, send,
       log: (m) => logUpdate('[logos] ' + m), smoke: SMOKE, links: require('./src/links.js'),
     });
     createWindow();
     setupUpdates();
     setupBridge();
+    if (!SMOKE) {
+      registerNativeHost();
+      // The extension folder you loaded in the browser gets this version's extension (used after the browser restarts).
+      if (fs.existsSync(path.join(app.getPath('userData'), 'Browser Extension'))) try { extensionFolder(); } catch {}
+    }
     if (!SMOKE) {
       setupTray();
       createQuick();
@@ -645,7 +1035,8 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
     }
     if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme, showQuick, getQuick: () => quick });
     else if (SMOKE && process.env.VAULT_REAL_LOGOS) require('./scripts/real-logos')({ win, nativeTheme, getLogos: () => logos });
-    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge, getLogos: () => logos });
+    else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge, getLogos: () => logos,
+      test: { guard, idle, getSession: () => session, lockVault, clearClipboard, copy, logUpdate, getQuickWin: () => quick, getPrompt: () => prompt, sitePasskeys } });
   });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { lock(); app.quit(); });

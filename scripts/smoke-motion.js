@@ -19,6 +19,8 @@ module.exports = async function motion({ win, js, wait, waitFor, shot, check, cl
   const menuOpen = () => js("!!document.querySelector('.menu:not(.closing)')");
   const active = () => js("(document.querySelector('.menu .menu-item.active .mi-label') || {}).textContent || ''");
   // Records every running animation/transition: which properties, on how large an element.
+  // (injected again after the window starts over in a fresh process when Vault locks)
+  const inject = async () => {
   await js(`window.__audit = { list: [], on: false,
     start() { this.list = []; this.on = true; const loop = () => {
       for (const a of document.getAnimations()) {
@@ -35,6 +37,8 @@ module.exports = async function motion({ win, js, wait, waitFor, shot, check, cl
     stop() { this.on = false; const d = []; for (let i = 1; i < this.t.length; i++) d.push(this.t[i] - this.t[i - 1]); d.sort((a, b) => a - b);
       const total = this.t[this.t.length - 1] - this.t[0];
       return { frames: d.length, fps: Math.round(d.length / total * 1000 * 10) / 10, p50: d[Math.floor(d.length * 0.5)], p95: d[Math.floor(d.length * 0.95)], p99: d[Math.floor(d.length * 0.99)], worst: d[d.length - 1], over25: d.filter((x) => x > 25).length }; } }; true`);
+  };
+  await inject();
 
   win.setAlwaysOnTop(true); // an uncovered window, so frames aren't throttled
   wc.setBackgroundThrottling(false);
@@ -241,10 +245,12 @@ module.exports = async function motion({ win, js, wait, waitFor, shot, check, cl
   console.log(`      measured: ${JSON.stringify(fps)}; animated properties: ${[...props].join(', ')}`);
 
   // ---------- Lock and unlock ----------
+  const fresh = new Promise((r) => wc.once('did-finish-load', r));
   await js('lockNow(); true');
   await wait(60);
   check('locking: the window sinks away first', await js("document.getElementById('app').classList.contains('leaving')"));
-  await waitFor("!document.getElementById('lock').hidden");
+  check('locking: the window then starts over in a fresh process (nothing left in memory)', await Promise.race([fresh.then(() => true), wait(6000).then(() => false)]));
+  await waitFor("!!window.__vaultState && !document.getElementById('lock').hidden");
 
   // ---------- Reduced motion ("Show animations in Windows" off) ----------
   try { wc.debugger.attach('1.3'); } catch {}
@@ -253,6 +259,7 @@ module.exports = async function motion({ win, js, wait, waitFor, shot, check, cl
   return {
     // run by the main smoke test after unlocking again, with reduced motion still on
     async reduced() {
+      await inject();
       await js('__audit.start(); true');
       await clickOn('#view-favorites'); await wait(300);
       await clickOn('#view-all'); await wait(300);

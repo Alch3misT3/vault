@@ -24,3 +24,26 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
     try { await chrome.action.openPopup(); } catch { badge('!', '#d70015'); }
   }
 });
+
+// ---- Passkeys: requests from web pages (passkeys-page.js → passkeys-content.js → here → Vault) ----
+// The site's origin is taken from the browser's own record of which tab and frame sent the request,
+// never from the page. Anything Vault can't or shouldn't handle falls back to the browser's own flow.
+const PASSKEY_WAIT_MS = 5 * 60 * 1000;
+async function passkeyRequest(msg, sender) {
+  if (sender.id !== chrome.runtime.id || !sender.tab || sender.frameId !== 0) return { fallback: true };
+  let origin;
+  try { origin = sender.origin || new URL(sender.url).origin; } catch { return { fallback: true }; }
+  if (!/^https:\/\/[^/]+$/.test(origin)) return { fallback: true };
+  if (!(await VaultClient.paired())) return { fallback: true };
+  try {
+    const r = await VaultClient.rpc('passkey', { op: msg.op, origin, options: msg.options, requestId: String(msg.requestId) }, PASSKEY_WAIT_MS);
+    if (r && (r.fallback || r.error || r.credential)) return { fallback: !!r.fallback, error: r.error, message: r.message, credential: r.credential };
+    return { fallback: true };
+  } catch { return { fallback: true }; }
+}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== 'object') return false;
+  if (msg.type === 'vault-passkey' && (msg.op === 'create' || msg.op === 'get')) { passkeyRequest(msg, sender).then(sendResponse); return true; }
+  if (msg.type === 'vault-passkey-cancel' && sender.tab) VaultClient.rpc('passkey-cancel', { requestId: String(msg.requestId) }).catch(() => {});
+  return false;
+});

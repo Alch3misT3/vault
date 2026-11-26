@@ -121,8 +121,6 @@ $('#pairForm').addEventListener('submit', async (e) => {
   $('#pairErr').textContent = '';
   $('#pairGo').disabled = true;
   try {
-    // Firefox asks for the 127.0.0.1 permission at this point; Chrome already has it.
-    if (chrome.permissions && chrome.permissions.request) { try { await chrome.permissions.request({ origins: ['http://127.0.0.1/*'] }); } catch {} }
     await VaultClient.pair($('#pairCode').value);
     await start();
   } catch (err) { $('#pairErr').textContent = err.message; }

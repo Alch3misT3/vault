@@ -59,30 +59,36 @@ Vault isn't code-signed yet, so Windows may say *"Windows protected your PC"* th
 - Export to CSV or JSON, and encrypted backup and restore
 - **Real site logos** on every account, fetched from each site itself (never through Google or another icon service) and stored encrypted with your vault. The background behind an open account takes the logo's colour. Turn it off in ••• → Download Site Logos.
 - Liquid Glass light and motion: light follows the pointer across glass, buttons squish when pressed, glass menus with full keyboard control. With Windows "Show animations" off, only short fades remain.
+- **Unlock with a passkey** instead of typing the master password: your phone (QR code, Bluetooth on), Windows Hello PIN or a USB security key. Add or remove them in ••• → Unlock With Passkey.
+- **Passkeys for websites**: with the browser extension, Vault can save a site's passkey and sign you in with it (a **Passkeys** view lists them). Vault asks you to confirm every time; **Use Another Device** keeps the browser's own passkey options.
 - Light and dark mode, keyboard shortcuts, right-click menus
 
 ## Browser extension
 
-Fill logins in Chrome, Edge, Brave or Firefox. The extension keeps no passwords: it asks Vault for one only when you fill.
+Fill logins and use passkeys in Chrome, Edge, Brave or Firefox. The extension keeps no passwords or keys: it asks Vault when you fill or sign in.
 
 1. In Vault, open **••• → Connect a Browser** and click **Show Extension Folder**.
 2. **Chrome / Edge / Brave:** open the extensions page (`chrome://extensions`, `edge://extensions`, `brave://extensions`), turn on **Developer mode**, click **Load unpacked** and pick that folder.
    **Firefox:** open `about:debugging#/runtime/this-firefox` and choose **Load Temporary Add-on…** (pick `manifest.json`). Firefox forgets it on restart unless the extension is signed by Mozilla.
 3. Click the Vault icon in the browser toolbar and paste the code Vault shows.
 
-Then click the Vault icon on any login page (or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>) to fill it. The extension folder is refreshed when Vault updates; the browser picks up the new version when it restarts.
+Then click the Vault icon on any login page (or press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd>) to fill it. When a site offers a passkey, Vault's own window asks you to confirm (unlocking first if needed). The extension folder is refreshed when Vault updates; the browser picks up the new version when it restarts.
 
-How it stays private: Vault listens only on `127.0.0.1` and only after a browser is paired. Pairing uses a one-time code shown in Vault; every message is encrypted (AES-256-GCM) with a key made from that code, time-stamped and single-use, and requests from web pages are refused. The pairing key is stored with Windows DPAPI. Remove a browser any time in Connect a Browser.
+How it stays private: the extension reaches Vault through **native messaging**. The browser starts Vault's small relay program (`vault-native-host.exe`), and only for the Vault extension (its id is the only one allowed). The relay passes the messages over a named pipe that only your Windows user can open: there is no network port. On top of that, pairing uses a one-time code shown in Vault, and every message is encrypted (AES-256-GCM) with a key made from that code, time-stamped and single-use. The pairing key is stored with Windows DPAPI. Remove a browser any time in Connect a Browser.
+
+Passkeys for websites: the extension catches `navigator.credentials.create()` / `get()` on https pages and hands the request to Vault, together with the page's origin as the browser reports it (never as the page claims). Vault refuses anything that isn't https, or whose rpId isn't the page's own domain or a parent domain of it (checked against the Public Suffix List, so e.g. `github.io` can't be claimed). It makes an ES256 key, stores it encrypted in the vault (site, account, user handle, credential id, private key, sign counter, date), and signs inside the app; the extension only receives the finished WebAuthn response.
 
 ## Security
 
-- Your passwords stay on your computer; nothing is sent anywhere. Internet requests: the update check against this repository's releases and, unless you turn it off, the site logos. A logo is asked from the site itself with only its address: no cookies, no account data. Logos are redrawn as plain images (SVG scripts never run) and cached encrypted with your vault, so the cache doesn't reveal which sites you use. If you connect a browser, Vault also talks to it over 127.0.0.1, which never leaves the PC.
-- The vault file is encrypted with **AES-256-GCM** using a key derived from your master password with **scrypt** (N=2¹⁷, r=8, p=1).
-- The master password is never stored. If you forget it, the vault can't be opened.
-- Copied passwords and codes are cleared from the clipboard after 30 seconds.
-- The quick-search panel never sees your passwords or 2FA keys: it asks the main app to copy them straight to the clipboard.
-- Vault locks after 5 minutes of inactivity, and when Windows locks or sleeps.
-- The app runs with context isolation, a sandboxed renderer, a strict Content Security Policy, and hardened Electron fuses.
+- Your passwords stay on your computer; nothing is sent anywhere. Internet requests: the update check against this repository's releases and, unless you turn it off, the site logos. A logo is asked from the site itself with only its address: no cookies, no account data. Logos are redrawn as plain images (SVG scripts never run) and cached encrypted with your vault, so the cache doesn't reveal which sites you use. A connected browser talks to Vault over a local named pipe, which never leaves the PC.
+- **Vault file**: a random 256-bit vault key encrypts your data with **AES-256-GCM** (a fresh random nonce on every save, the full 128-bit tag always checked). The vault key is stored wrapped by your master password (**scrypt**, N=2¹⁸, r=8, p=1, a fresh random salt) and, for each passkey you add, by a key derived (HKDF-SHA256) from that passkey's WebAuthn **PRF** output. Each wrapped box is tied to its role, so boxes can't be swapped. Saves go to a temp file that is flushed to disk and then renamed, so a crash never leaves half a vault; `vault.json.bak` is the previous (encrypted) version. Vaults from Vault 1.3 and older open as before and are converted on the next unlock; the old file is kept as `vault-v1-backup.json`.
+- **Unlocking with a passkey** really decrypts: the passkey's PRF output unwraps the vault key, so there is no "yes/no" unlock that could be skipped. A passkey without PRF is refused when you add it. Changing the master password makes a new vault key, so an old copy of the file plus the old password opens nothing current; your passkeys then have to be added again.
+- Why the passkey runs inside Vault's window: Electron's built-in WebAuthn works on Windows (it uses Windows' own `webauthn.dll`, which shows the system dialog: phone by QR code, Windows Hello PIN, security key) as long as the page has a real https origin. Vault's pages are served from `https://vault.localhost/` by an in-app handler (never over the network), so no native add-on is needed.
+- The master password is never stored. If you forget it, the vault can't be opened (a passkey you added still works).
+- Copied passwords and codes are cleared from the clipboard after 30 seconds, or straight away if you quit Vault sooner (only if the clipboard still holds them).
+- The quick-search panel and the passkey prompt never see your passwords, 2FA keys or private keys: the main app copies and signs.
+- Vault locks after 5 minutes without use, and when Windows locks, sleeps or shuts down. Locking zeroes the key in memory, and every window that showed vault data starts over in a fresh process, so nothing of the vault stays in its memory.
+- **Electron hardening**: every window runs with context isolation, sandbox, no Node.js, web security on, and a minimal preload API. Pages are served from Vault's own origin (no `file://`), with a strict Content Security Policy (no eval, no inline or remote scripts). Every IPC call is checked against the one Vault page allowed to make it. Navigation, new windows and `<webview>` are blocked; links open in your browser only if they are https. All permission requests are refused. The built app has hardened Electron fuses (no RunAsNode, no `NODE_OPTIONS`, no `--inspect`, app only from its integrity-checked asar, no extra `file://` privileges) and no DevTools. Vault writes no crash dumps and keeps secrets out of its logs (`update.log`), temp files and settings.
 
 ## Building from source
 
@@ -94,6 +100,8 @@ npm run dist       # build the installer and portable .exe into dist/
 ```
 
 Releasing a new version: raise `version` in `package.json`, then run `.\scripts\release.ps1`.
+
+`VAULT_EXT_E2E=1 npm run smoke` also runs the browser extension in a real Microsoft Edge window, including passkeys on [webauthn.io](https://webauthn.io).
 
 ## Credits
 

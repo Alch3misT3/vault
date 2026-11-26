@@ -2,21 +2,79 @@
   "manifest_version": 3,
   "name": "Vault",
   "short_name": "Vault",
-  "version": "1.2.0",
-  "description": "Fill logins from Vault, the private password manager on your PC.",
-  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "version": "1.4.0",
+  "description": "Fill logins and use passkeys from Vault, the private password manager on your PC.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqoDg4Ezxq+L55PSgP5gYUFkvOlvxO5vl0RExKEVSnpHFTh36GicpQQ2Z0+BV/vGA0SOsvC7l/E1LMcBNMz3JFlkewiX8rNE9Kjp9WcESgUV0UDRfHBkrdvf8tGqU5Wv0d7iX2RLDm8IxDdIFBytQnCVyMkUNaDg/3fDhI8ls60TjP7t4kRZj/NIXoSGpJuGhFZAX2nAh34L9HqKD7u92Af65js8eKFqSyu7qEL4iKTLGyDxPKen6h+/cUbmpRUmEbQ7bZLJoG71Kig7HUVHBaRtAR+NEPHsHttCxGg5zQGM0X580Ynv8/dLCwPs0g/d8p/teRv4dfzWognOZqsYznQIDAQAB",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
   "action": {
     "default_title": "Vault (Ctrl+Shift+L fills this site)",
     "default_popup": "popup.html",
-    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
   },
-  "background": { "service_worker": "background.js", "scripts": ["vault-client.js", "background.js"] },
-  "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "vault-client.js",
+      "background.js"
+    ]
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "nativeMessaging"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*/*"
+      ],
+      "js": [
+        "passkeys-page.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*/*"
+      ],
+      "js": [
+        "passkeys-content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
   "commands": {
-    "fill-login": { "suggested_key": { "default": "Ctrl+Shift+L" }, "description": "Fill the login for this site" },
-    "_execute_action": { "suggested_key": { "default": "Alt+Shift+V" } }
+    "fill-login": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L"
+      },
+      "description": "Fill the login for this site"
+    },
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+V"
+      }
+    }
   },
-  "content_security_policy": { "extension_pages": "script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:*" },
-  "browser_specific_settings": { "gecko": { "id": "vault-extension@alch3mist3.github.io", "strict_min_version": "121.0" } }
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "vault-extension@alch3mist3.github.io",
+      "strict_min_version": "128.0"
+    }
+  }
 }

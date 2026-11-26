@@ -1,10 +1,9 @@
 'use strict';
-// Talks to the Vault app on this PC (127.0.0.1). Shared by the popup and the background worker.
+// Talks to the Vault app on this PC through native messaging. Shared by the popup and the background worker.
 // Every message is AES-256-GCM encrypted with the key made during pairing; Vault refuses anything else.
 
 /* global chrome */
 var VaultClient = (() => {
-  const PORTS = [47290, 47291, 47292, 47293, 47294];
   const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
   const te = new TextEncoder();
   const td = new TextDecoder();
@@ -32,28 +31,65 @@ var VaultClient = (() => {
   const aesKey = (raw) => crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
 
   const store = {
-    get: () => chrome.storage.local.get(['clientId', 'key', 'port', 'vaultName']),
+    get: () => chrome.storage.local.get(['clientId', 'key', 'vaultName']),
     set: (o) => chrome.storage.local.set(o),
-    clear: () => chrome.storage.local.remove(['clientId', 'key', 'port']),
+    clear: () => chrome.storage.local.remove(['clientId', 'key']),
   };
 
-  async function hello(port) {
-    try {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 800);
-      const r = await fetch(`http://127.0.0.1:${port}/hello`, { signal: ctl.signal, cache: 'no-store' });
-      clearTimeout(timer);
-      const j = await r.json();
-      return j && j.app === 'vault' ? j : null;
-    } catch { return null; }
+  // ---- native messaging: the browser starts Vault's relay, which passes messages to Vault ----
+  const HOST = 'local.vault.app';
+  let port = null;
+  let nextId = 1;
+  let idleTimer = null;
+  const waiting = new Map(); // id -> { resolve, reject, timer }
+  const offline = (msg) => { const e = new Error(msg || 'Vault isn’t running'); e.code = 'offline'; return e; };
+
+  function closePort() {
+    if (port) { try { port.disconnect(); } catch {} }
+    port = null;
   }
-  // Vault uses the first free port of a short list.
-  async function findPort(preferred) {
-    for (const p of [preferred, ...PORTS.filter((x) => x !== preferred)].filter(Boolean)) {
-      const j = await hello(p);
-      if (j) return { port: p, info: j };
-    }
-    return null;
+  function failAll(err) {
+    for (const [, w] of waiting) { clearTimeout(w.timer); w.reject(err); }
+    waiting.clear();
+  }
+  function getPort() {
+    if (port) return port;
+    const p = chrome.runtime.connectNative(HOST);
+    port = p;
+    p.onMessage.addListener((m) => {
+      if (m && m.offline) { if (port === p) { closePort(); failAll(offline()); } return; }
+      const w = m && waiting.get(m.id);
+      if (!w) return;
+      waiting.delete(m.id);
+      clearTimeout(w.timer);
+      delete m.id;
+      w.resolve(m);
+      idle();
+    });
+    p.onDisconnect.addListener(() => {
+      const why = chrome.runtime.lastError && chrome.runtime.lastError.message;
+      if (port !== p) return; // an older port we closed ourselves
+      port = null;
+      failAll(offline(/not found|not registered/i.test(why || '') ? 'Open Vault once on this PC, then try again.' : 'Vault isn’t running'));
+    });
+    return p;
+  }
+  // The relay (and Vault's side of the pipe) closes again when not in use for a while.
+  function idle() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (!waiting.size) closePort(); }, 60000);
+  }
+  function call(msg, timeoutMs = 15000) {
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => { waiting.delete(id); reject(offline('Vault didn’t answer')); }, timeoutMs);
+      waiting.set(id, { resolve, reject, timer });
+      try { getPort().postMessage({ id, ...msg }); } catch (e) { clearTimeout(timer); waiting.delete(id); reject(offline()); }
+    });
+  }
+
+  async function hello() {
+    try { const j = await call({ kind: 'hello' }, 4000); return j && j.app === 'vault' ? j : null; } catch { return null; }
   }
 
   function browserName() {
@@ -69,45 +105,31 @@ var VaultClient = (() => {
   async function pair(code) {
     const bytes = b32decode(code);
     if (bytes.length !== 20) throw new Error('That code looks incomplete. Copy it again from Vault.');
-    const found = await findPort();
-    if (!found) throw new Error('Vault isn’t running. Open Vault, then try again.');
-    if (!found.info.pairing) throw new Error('In Vault, open ••• → Connect a Browser first, then paste the code it shows.');
+    const info = await hello();
+    if (!info) throw new Error('Vault isn’t running. Open Vault, then try again.');
+    if (!info.pairing) throw new Error('In Vault, open ••• → Connect a Browser first, then paste the code it shows.');
     const clientId = hex(rand(16));
     const raw = await deriveRaw(bytes, clientId);
-    const r = await fetch(`http://127.0.0.1:${found.port}/pair`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId, name: browserName(), proof: b64(await hmac(raw, 'pair:' + clientId)) }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.error === 'code' ? 'That code doesn’t match. Check it and try again.' : 'Vault didn’t accept the code. Open Connect a Browser again for a fresh one.');
+    const j = await call({ kind: 'pair', clientId, name: browserName(), proof: b64(await hmac(raw, 'pair:' + clientId)) });
+    if (!j.ok) throw new Error(j.error === 'code' ? 'That code doesn’t match. Check it and try again.' : 'Vault didn’t accept the code. Open Connect a Browser again for a fresh one.');
     // Make sure it's really Vault answering, not something pretending to be it.
     if (j.proof !== b64(await hmac(raw, 'paired:' + clientId))) throw new Error('Unexpected answer from Vault.');
-    await store.set({ clientId, key: b64(raw), port: found.port });
+    await store.set({ clientId, key: b64(raw) });
     return true;
   }
 
-  async function rpc(type, args = {}) {
+  // timeoutMs: passkey requests wait while the user answers in Vault.
+  async function rpc(type, args = {}, timeoutMs) {
     const s = await store.get();
     if (!s.clientId || !s.key) { const e = new Error('Not connected to Vault'); e.code = 'unpaired'; throw e; }
-    let port = s.port;
-    if (!(await hello(port))) {
-      const f = await findPort(port);
-      if (!f) { const e = new Error('Vault isn’t running'); e.code = 'offline'; throw e; }
-      port = f.port;
-      await store.set({ port });
-    }
     const key = await aesKey(unb64(s.key));
     const n = hex(rand(12));
     const iv = rand(12);
     const aad = te.encode(s.clientId);
     const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, te.encode(JSON.stringify({ t: Date.now(), n, type, ...args })));
-    const r = await fetch(`http://127.0.0.1:${port}/rpc`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-      body: JSON.stringify({ clientId: s.clientId, iv: b64(iv), ct: b64(ct) }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.status === 401 && j.error === 'not-paired') { await store.clear(); const e = new Error('Vault no longer knows this browser. Pair it again.'); e.code = 'unpaired'; throw e; }
-    if (!r.ok) throw new Error('Vault refused the request (' + (j.error || r.status) + ')');
+    const j = await call({ kind: 'rpc', clientId: s.clientId, iv: b64(iv), ct: b64(ct) }, timeoutMs);
+    if (j.error === 'not-paired') { await store.clear(); const e = new Error('Vault no longer knows this browser. Pair it again.'); e.code = 'unpaired'; throw e; }
+    if (j.error) throw new Error('Vault refused the request (' + j.error + ')');
     const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(j.iv), additionalData: aad }, key, unb64(j.ct));
     const out = JSON.parse(td.decode(plain));
     if (out.n !== n) throw new Error('Mismatched reply');
@@ -186,5 +208,5 @@ var VaultClient = (() => {
     return res && res.result;
   }
 
-  return { pair, rpc, fill, fillCode, findPort, siteOf, unpair: () => store.clear(), paired: async () => !!(await store.get()).clientId };
+  return { pair, rpc, hello, fill, fillCode, siteOf, unpair: () => store.clear(), paired: async () => !!(await store.get()).clientId };
 })();

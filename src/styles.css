@@ -542,14 +542,15 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .update-text span { color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .update-bar .btn-primary { height: 28px; padding: 0 13px; font-size: 12.5px; }
 
-/* ---------- Views: All / Favorites / Codes / Security / Deleted ---------- */
+/* ---------- Views: All / Favorites / Codes / Security / Deleted / Passkeys ---------- */
+/* Six tabs, each as wide as its label needs, spread across the bar. */
 .views {
-  position: relative; display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; flex: none;
+  position: relative; display: grid; grid-template-columns: repeat(6, max-content); justify-content: space-between; gap: 0; flex: none;
   margin: -2px 12px 10px; padding: 3px; border-radius: 16px; background: var(--field);
 }
 .view-tab {
   display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0;
-  padding: 6px 0 4px; border-radius: 13px; color: var(--secondary);
+  padding: 6px 4px 4px; border-radius: 13px; color: var(--secondary);
   position: relative; z-index: 1;
   transition: color .25s, transform var(--t-settle) var(--spring-bounce);
 }
@@ -566,7 +567,7 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .view-pill.jump { transition: none; }
 .view-icon { position: relative; width: 17px; height: 17px; transition: transform var(--t-settle) var(--spring-bounce); }
 .view-tab[aria-selected="true"] .view-icon { transform: scale(1.1); }
-.view-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.view-label { font-size: 10px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
 .badge {
   position: absolute; top: -5px; left: 11px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
   background: var(--danger-fill); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
@@ -754,3 +755,12 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
   .toast, .toast.show { --tx: -50%; }
 }
 @keyframes fade-out { to { opacity: 0; } }
+
+/* Passkey unlock */
+.pk-unlock { display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; }
+.pk-unlock svg { width: 17px; height: 17px; flex: none; }
+.pk-warn { margin: -4px 0 10px; color: var(--danger); font-size: 12px; font-weight: 500; }
+.pk-add-label { margin: 4px 0 6px 12px; }
+.pk-empty { margin: 0 0 14px 12px; color: var(--secondary); font-size: 12px; }
+.lock-error.pk-info { color: var(--secondary); }
+.pk-detail-note { margin: 14px 16px 0; font-size: 12px; line-height: 1.45; color: var(--secondary); text-wrap: pretty; }

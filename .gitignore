@@ -3,3 +3,4 @@ dist/
 smoke-shots/
 *.log
 dist-test/
+build/native-host/

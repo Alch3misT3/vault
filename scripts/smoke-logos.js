@@ -28,7 +28,7 @@ const CLEAR = [0, 0, 0, 0];
 const disc = (fg, bg = CLEAR, r = 0.42) => (x, y) => ((x - 0.5) ** 2 + (y - 0.5) ** 2 < r * r ? rgb(fg) : bg);
 const square = (bg, fg, inner = 0.26) => (x, y) => (Math.abs(x - 0.5) < inner && Math.abs(y - 0.5) < inner ? rgb(fg) : rgb(bg));
 
-module.exports = async function logos({ app, win, js, wait, waitFor, shot, check, getLogos, getQuick, showQuick, nativeTheme, MASTER }) {
+module.exports = async function logos({ app, win, js, wait, waitFor, relock, shot, check, getLogos, getQuick, showQuick, nativeTheme, MASTER }) {
   const L = getLogos();
   const log = []; // every request the "websites" received
   const servers = [];
@@ -141,8 +141,7 @@ module.exports = async function logos({ app, win, js, wait, waitFor, shot, check
 
   // lock + unlock: shown again straight from the encrypted cache, no network
   const before = log.length;
-  await js('lockNow()');
-  await waitFor("!document.getElementById('lock').hidden");
+  await relock();
   check('locking drops the logos from memory', !L._cache());
   await js(`(() => { const el = document.getElementById('pw1'); el.value = ${JSON.stringify(MASTER)}; el.dispatchEvent(new Event('input')); document.getElementById('unlockGo').click(); })()`);
   await waitFor("!document.getElementById('app').hidden");
@@ -177,8 +176,7 @@ module.exports = async function logos({ app, win, js, wait, waitFor, shot, check
   for (let i = 0; i < 80 && L._busy(); i++) await wait(100);
   const NEW = 'another horse battery';
   const cp = await js(`window.vault.changePassword(${JSON.stringify(MASTER)}, ${JSON.stringify(NEW)}, window.__vaultState.items)`);
-  await js('lockNow()');
-  await waitFor("!document.getElementById('lock').hidden");
+  await relock();
   const nCp = log.length;
   await js(`(() => { const el = document.getElementById('pw1'); el.value = ${JSON.stringify(NEW)}; el.dispatchEvent(new Event('input')); document.getElementById('unlockGo').click(); })()`);
   await waitFor("!document.getElementById('app').hidden");

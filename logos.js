@@ -12,6 +12,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { session } = require('electron');
+const security = require('./security');
 
 const WEEK = 7 * 24 * 3600 * 1000;
 const RETRY_FAILED = 24 * 3600 * 1000;
@@ -19,7 +21,7 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const LIMITS = { html: 512 * 1024, manifest: 128 * 1024, image: 1024 * 1024 };
 const OUT = 144; // stored logo size in pixels (sharp at 72 px on a 2x screen)
 
-module.exports = function createLogos({ app, BrowserWindow, ipcMain, getKey, prefs, setPref, send, log, smoke, links }) {
+module.exports = function createLogos({ app, BrowserWindow, handle, getKey, prefs, setPref, send, log, smoke, links }) {
   const file = () => path.join(app.getPath('userData'), 'logos.vault');
   const t = { base: null, timeout: 8000, now: () => Date.now() }; // test hooks (smoke test only)
   let cache = null;          // Map domain -> record, while unlocked
@@ -172,23 +174,17 @@ module.exports = function createLogos({ app, BrowserWindow, ipcMain, getKey, pre
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => { if (decoder && !decoder.isDestroyed()) decoder.destroy(); decoder = null; decoderReady = null; }, 30000);
     if (decoder && !decoder.isDestroyed()) return decoderReady;
+    // Its own in-memory session: no cookies, no cache shared with anything, and no network at all
+    // (only Vault's own decoder page is served; its CSP also blocks everything else).
+    const ses = security.serveApp(session.fromPartition('vault-logo-decoder'));
     decoder = new BrowserWindow({
       show: false, width: 200, height: 200,
-      webPreferences: {
-        preload: path.join(__dirname, 'preload-logo.js'), sandbox: true, contextIsolation: true, nodeIntegration: false,
-        spellcheck: false, devTools: false, backgroundThrottling: false,
-        partition: 'vault-logo-decoder', // its own in-memory session: no cookies, no cache shared with anything
-      },
+      webPreferences: security.webPrefs({ preload: path.join(__dirname, 'preload-logo.js'), session: ses, devTools: false, backgroundThrottling: false }),
     });
-    decoder.webContents.on('will-navigate', (e) => e.preventDefault());
-    decoder.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    // The decoder page may not reach the network at all (its CSP also blocks it).
-    decoder.webContents.session.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (_d, cb) => cb({ cancel: true }));
-    decoderReady = decoder.loadFile(path.join(__dirname, 'src', 'logo-decoder.html')).then(() => decoder);
+    decoderReady = decoder.loadURL(security.pageUrl('logo-decoder.html')).then(() => decoder);
     return decoderReady;
   }
-  ipcMain.on('logo:decoded', (e, id, result) => {
-    if (!decoder || decoder.isDestroyed() || e.sender !== decoder.webContents) return;
+  security.makeGuard({ 'logo-decoder.html': () => decoder }).on('logo-decoder.html', 'logo:decoded', (e, id, result) => {
     const p = pending.get(id);
     if (p) { pending.delete(id); p(result); }
   });
@@ -280,7 +276,7 @@ module.exports = function createLogos({ app, BrowserWindow, ipcMain, getKey, pre
   }
   const validDomain = (d) => typeof d === 'string' && d.length < 254 && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(d) && !/^\d+(\.\d+)+$/.test(d);
 
-  ipcMain.handle('logos:get', (e, domains) => {
+  handle('logos:get', (e, domains) => {
     if (!getKey()) return null;
     if (!enabled()) return { on: false, map: {} };
     load();

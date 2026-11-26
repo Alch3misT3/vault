@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Vault</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -55,6 +55,7 @@
       </div>
       <div id="strength" class="strength" hidden><span></span></div>
       <p id="lockError" class="lock-error" role="alert"></p>
+      <button id="pkUnlock" class="btn-secondary wide pk-unlock" type="button" hidden><svg aria-hidden="true"><use href="#i-key"/></svg>Unlock with Passkey</button>
       <button id="createGo" class="btn-primary wide" type="submit" hidden>Create Vault</button>
       <p id="lockNote" class="lock-note" hidden>Use at least 8 characters. There is no reset: if you forget this password, nobody can open the vault, including you.</p>
     </form>
@@ -105,6 +106,7 @@
     <form id="changePwForm" method="dialog" novalidate>
       <h2>Change Master Password</h2>
       <p>Your accounts are re-encrypted with the new password.</p>
+      <p id="cpPasskeys" class="pk-warn" hidden>Your passkeys stop unlocking Vault: add them again afterwards.</p>
       <input id="cpOld" class="alert-input" type="password" placeholder="Current password" aria-label="Current password">
       <input id="cpNew" class="alert-input" type="password" placeholder="New password (8+ characters)" aria-label="New password">
       <input id="cpNew2" class="alert-input" type="password" placeholder="Type new password again" aria-label="Confirm new password">
@@ -195,6 +197,21 @@
     </form>
   </dialog>
 
+  <dialog id="passkeysDlg" class="alert glass browser-alert">
+    <form id="passkeysForm" method="dialog" novalidate>
+      <h2>Unlock With a Passkey</h2>
+      <p>Unlock Vault with your phone (scan a QR code; Bluetooth must be on), your Windows Hello PIN or a USB security key instead of typing the master password. The master password still works, and you need it to add a passkey.</p>
+      <div id="pkList" class="br-clients"></div>
+      <div class="section-label pk-add-label">Add a Passkey</div>
+      <input id="pkName" class="alert-input" type="text" placeholder="Name, e.g. My phone" maxlength="40" aria-label="Passkey name" spellcheck="false" autocomplete="off">
+      <input id="pkPw" class="alert-input" type="password" placeholder="Master password" aria-label="Master password">
+      <p id="pkStatus" class="lock-error" role="alert"></p>
+      <div class="alert-actions">
+        <button value="cancel" class="btn-secondary" formnovalidate>Done</button>
+        <button id="pkAdd" type="button" class="btn-primary">Add Passkey…</button>
+      </div>
+    </form>
+  </dialog>
   <script src="fx.js"></script>
   <script src="otp.js"></script>
   <script src="words.js"></script>

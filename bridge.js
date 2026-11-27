@@ -85,6 +85,11 @@ module.exports = function createBridge(o) {
   }
 
   // ---- what the extension can ask -------------------------------------------
+  function itemSites(it) {
+    const link = o.links.loginLink(it);
+    const web = o.links.hostOf(it.website);
+    return [...new Set([link && link.host, web && web.hostname].filter(Boolean).map(siteOf))];
+  }
   function listFor(url, query) {
     const items = (o.sessionItems() || []).filter((x) => !x.deletedAt);
     let tabSite = null;
@@ -101,7 +106,7 @@ module.exports = function createBridge(o) {
         const hay = [it.title, it.username, it.website].join('\n').toLowerCase();
         if (!q.split(/\s+/).every((t) => hay.includes(t))) continue;
       } else if (!match) continue;
-      out.push({ id: it.id, title: it.title, username: it.username, host, match, favorite: !!it.favorite, hasPassword: !!it.password, hasCode: !!o.otp.otpField(it) });
+      out.push({ id: it.id, title: it.title, username: it.username, host, match, favorite: !!it.favorite, hasPassword: !!it.password, hasCode: !!o.otp.otpField(it), changing: !!(it.pending && it.pending.value) });
     }
     out.sort((a, b) => (b.match - a.match) || (b.favorite - a.favorite) || a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
     return out.slice(0, 50);
@@ -126,6 +131,15 @@ module.exports = function createBridge(o) {
     const it = (o.sessionItems() || []).find((x) => x.id === msg.id && !x.deletedAt);
     if (!it) return { error: 'missing' };
     if (msg.type === 'login') return { username: it.username || '', password: it.password || '' };
+    // A password change in progress: the current and the new password, only for the account's own site.
+    if (msg.type === 'change-login') {
+      if (!(it.pending && it.pending.value)) return { error: 'no-change' };
+      let tab;
+      try { tab = new URL(String(msg.url || '')); } catch { return { error: 'site' }; }
+      const site = itemSites(it);
+      if (tab.protocol !== 'https:' || !site.includes(siteOf(tab.hostname))) return { error: 'site', site: site[0] || '' };
+      return { username: it.username || '', current: it.password || '', next: it.pending.value, site: siteOf(tab.hostname) };
+    }
     if (msg.type === 'code' || msg.type === 'copy') {
       const f = o.otp.otpField(it);
       const cfg = f && o.otp.parse(f.value);

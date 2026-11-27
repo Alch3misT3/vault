@@ -23,7 +23,7 @@ const DEMO = [
   { title: 'Home Wi-Fi', website: '', username: 'Morgan-5G', password: 'leafy-garden-4071', notes: 'Router admin is on the sticker under the box.' },
 ];
 
-module.exports = async function screenshots({ app, win, nativeTheme }) {
+module.exports = async function screenshots({ testWorkArea, app, win, nativeTheme }) {
   const out = path.join(__dirname, '..', 'docs', 'screenshots');
   fs.mkdirSync(out, { recursive: true });
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -41,7 +41,8 @@ module.exports = async function screenshots({ app, win, nativeTheme }) {
   try {
     await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once('did-finish-load', r) : r()));
     win.setContentSize(1200, 760);
-    win.center();
+    const area = testWorkArea(); // a second screen if there is one
+    win.setPosition(area.x + 40, area.y + 40);
     win.showInactive();
     nativeTheme.themeSource = 'light';
     await waitFor("!document.getElementById('lock').hidden");

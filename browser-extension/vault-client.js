@@ -186,6 +186,55 @@ var VaultClient = (() => {
     return { filled: 1 };
   }
 
+  // A password change in progress: the current password goes into the "current password" field, the
+  // new one into the "new password" field(s). Runs only on the account's own site (checked again here,
+  // in case the tab moved on). Nothing is submitted: you press the site's own save button.
+  function fillChangeInPage(current, next, site) {
+    const siteOfHost = (hostname) => {
+      const parts = String(hostname || '').toLowerCase().split('.');
+      if (parts.length <= 2) return parts.join('.');
+      const sld = parts[parts.length - 2];
+      const short = parts[parts.length - 1].length === 2 && /^(co|com|net|org|gov|ac|edu|or|ne|go)$/.test(sld);
+      return parts.slice(short ? -3 : -2).join('.');
+    };
+    if (location.protocol !== 'https:' || siteOfHost(location.hostname) !== site) return { filled: 0, wrongSite: true };
+    const visible = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !el.disabled && !el.readOnly; };
+    const setValue = (el, v) => {
+      const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value');
+      el.focus();
+      if (d && d.set) d.set.call(el, v); else el.value = v;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const fields = [...document.querySelectorAll('input[type="password"]')].filter(visible);
+    const words = (i) => [i.autocomplete, i.name, i.id, i.placeholder, i.getAttribute('aria-label'),
+      ...(i.labels ? [...i.labels].map((l) => l.textContent) : [])].join(' ');
+    const kind = fields.map((i) => {
+      if (/\bcurrent-password\b/.test(i.autocomplete)) return 'cur';
+      if (/\bnew-password\b/.test(i.autocomplete)) return 'new';
+      const w = words(i);
+      if (/new|confirm|repeat|retype|again|verify/i.test(w)) return 'new';
+      if (/current|old|existing|present/i.test(w)) return 'cur';
+      return null;
+    });
+    // No hints: one field asks for the current password; with more, the first is the current one.
+    kind.forEach((k, i) => {
+      if (k) return;
+      const firstNew = kind.indexOf('new');
+      if (kind.includes('cur')) kind[i] = 'new';
+      else if (firstNew >= 0) kind[i] = i < firstNew ? 'cur' : 'new';
+      else kind[i] = i === 0 ? 'cur' : 'new';
+    });
+    let cur = 0, nw = 0;
+    fields.forEach((el, i) => {
+      if (kind[i] === 'cur' && current) { setValue(el, current); cur++; }
+      if (kind[i] === 'new' && next) { setValue(el, next); nw++; }
+    });
+    const firstNew = fields[kind.indexOf('new')];
+    if (firstNew) firstNew.focus();
+    return { filled: cur + nw, current: cur, next: nw };
+  }
+
   // "accounts.google.com" -> "google.com" (same idea as in Vault).
   function siteOf(hostname) {
     const parts = String(hostname || '').toLowerCase().split('.');
@@ -201,6 +250,13 @@ var VaultClient = (() => {
     const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fillPage, args: [login.username, login.password] });
     return res && res.result;
   }
+  async function fillChange(tab, item) {
+    const r = await rpc('change-login', { id: item.id, url: tab.url });
+    if (r.error === 'site') throw new Error(r.site ? `This page isn’t ${r.site}. Open the change page from Vault.` : 'This page isn’t the account’s site.');
+    if (r.error) throw new Error('No password change waiting for this account.');
+    const [res] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: fillChangeInPage, args: [r.current, r.next, r.site] });
+    return res && res.result;
+  }
   async function fillCode(tab, item) {
     const r = await rpc('code', { id: item.id });
     if (!r.code) throw new Error('No verification code for this account.');
@@ -208,5 +264,5 @@ var VaultClient = (() => {
     return res && res.result;
   }
 
-  return { pair, rpc, hello, fill, fillCode, siteOf, unpair: () => store.clear(), paired: async () => !!(await store.get()).clientId };
+  return { pair, rpc, hello, fill, fillCode, fillChange, fillChangeInPage, siteOf, unpair: () => store.clear(), paired: async () => !!(await store.get()).clientId };
 })();

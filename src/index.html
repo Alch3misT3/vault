@@ -33,6 +33,7 @@
       <symbol id="i-sliders" viewBox="0 0 20 20"><path d="M3.5 6h6m4 0h3M3.5 14h3m4 0h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="11.5" cy="6" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8.5" cy="14" r="2" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
       <symbol id="i-refresh" viewBox="0 0 20 20"><path d="M15.8 9.2A6 6 0 1 0 14 14.3M16 4.5v4.8h-4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-check" viewBox="0 0 20 20"><path d="m5 10.5 3.2 3.2L15 6.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-mail" viewBox="0 0 20 20"><rect x="2.8" y="4.6" width="14.4" height="10.8" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m3.4 6 6.6 5 6.6-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-vault" viewBox="0 0 64 64"><rect x="15" y="27" width="34" height="25" rx="6" fill="#fff"/><path d="M22 27v-5.5a10 10 0 0 1 20 0V27" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="38" r="3.6" fill="var(--icon-hole)"/><rect x="30.4" y="38" width="3.2" height="7" rx="1.6" fill="var(--icon-hole)"/></symbol>
     </defs>
   </svg>
@@ -78,6 +79,7 @@
         <button id="qClear" class="search-clear" aria-label="Clear search" hidden><svg><use href="#i-clear"/></svg></button>
       </div>
       <nav id="views" class="views" role="tablist" aria-label="Show"></nav>
+      <div id="listTool" class="list-tool" hidden></div>
       <div id="listMeta" class="list-meta"></div>
       <ul id="list" class="list" role="listbox" aria-label="Accounts" tabindex="-1"></ul>
       <div id="updateBar" class="update-bar" role="status" hidden>
@@ -98,6 +100,19 @@
       <div class="alert-actions">
         <button value="cancel" class="btn-secondary">Cancel</button>
         <button id="alertOk" value="ok" class="btn-danger">Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="changeDlg" class="alert glass wide-alert">
+    <form method="dialog">
+      <div class="app-icon small glyph" aria-hidden="true"><svg><use href="#i-key"/></svg></div>
+      <h2 id="changeTitle">Did the change work?</h2>
+      <p id="changeBody"></p>
+      <div class="alert-actions stacked">
+        <button id="changeYes" value="yes" class="btn-primary">It Worked</button>
+        <button id="changeNo" value="no" class="btn-secondary">It Didn’t Work</button>
+        <button id="changeLater" value="later" class="btn-plain">Not Yet</button>
       </div>
     </form>
   </dialog>
@@ -218,5 +233,6 @@
   <script src="links.js"></script>
   <script src="transfer.js"></script>
   <script src="app.js"></script>
+  <script src="changes.js"></script>
 </body>
 </html>

@@ -19,7 +19,21 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const js = (code) => win.webContents.executeJavaScript(code);
   // (a window that just started over may not have painted yet: try again for a moment)
-  const shot = async (name) => { await wait(350); let img; for (let i = 0; ; i++) { try { img = await win.webContents.capturePage(); break; } catch (e) { if (i > 20) throw e; if (i === 0) { win.setAlwaysOnTop(true); win.moveTop(); win.webContents.invalidate(); } await wait(100); } } fs.writeFileSync(path.join(shots, name + '.png'), img.toPNG()); };
+  const shot = async (name) => {
+    await wait(350); let img;
+    for (let i = 0; ; i++) {
+      try { img = await win.webContents.capturePage(); break; } catch (e) {
+        if (i === 0) console.log('shot retry', name, JSON.stringify({ visible: win.isVisible(), min: win.isMinimized(), bounds: win.getBounds(), focused: win.isFocused() }));
+        if (i > 40) throw e;
+        if (i === 0) { win.setAlwaysOnTop(true); win.moveTop(); win.webContents.invalidate(); }
+        if (i === 10) { win.showInactive(); win.webContents.invalidate(); }
+        if (i === 20) { win.show(); win.webContents.invalidate(); }
+        await wait(100);
+      }
+    }
+    win.setAlwaysOnTop(false);
+    fs.writeFileSync(path.join(shots, name + '.png'), img.toPNG());
+  };
   // (the window reloads in a fresh process when Vault locks, so a check may hit a page that's starting over)
   const waitFor = async (code, ms = 8000) => { const t = Date.now(); while (Date.now() - t < ms) { try { if (await js(code)) return true; } catch {} await wait(80); } return false; };
   const screenShot = async (name) => { try { const { screen } = require('electron'); const b = win.getBounds(); const f = screen.getDisplayMatching(b).scaleFactor; win.setAlwaysOnTop(true); win.show(); await wait(700); require('child_process').execFileSync('powershell', ['-NoProfile','-ExecutionPolicy','Bypass','-File', path.join(__dirname,'screen-shot.ps1'), '-x:' + Math.round(b.x*f), '-y:' + Math.round(b.y*f), '-w:' + Math.round(b.width*f), '-h:' + Math.round(b.height*f), '-out:' + path.join(shots, name + '.png')]); win.setAlwaysOnTop(false); } catch (e) { console.log('screen shot skipped', e.message); } };
@@ -33,12 +47,14 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     return ok;
   };
   const MASTER = 'correct horse battery';
+  const extraSecrets = []; // passwords made during the run, also searched for on disk at the end
 
   if (process.env.VAULT_DEBUG_EVENTS) for (const ev of ['render-process-gone', 'did-finish-load', 'did-fail-load', 'did-start-loading', 'dom-ready']) win.webContents.on(ev, (_e, d) => console.log('EVENT', ev, Date.now() % 100000, d && d.reason || ''));
   win.webContents.on('console-message', (e) => { const m = e.message || ''; if (/error|uncaught/i.test(m)) console.log('RENDERER:', m); });
   try {
     await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once('did-finish-load', r) : r()));
-    win.setBounds({ x: 40, y: 40, width: 1080, height: 720 });
+    const area = test.testWorkArea(); // a second screen if there is one
+    win.setBounds({ x: area.x + 40, y: area.y + 40, width: 1080, height: 720 });
     win.showInactive();
     nativeTheme.themeSource = 'light';
     await waitFor("!document.getElementById('lock').hidden");
@@ -416,10 +432,13 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
       // Website passkeys through the same channel (Vault's own window confirms).
       await require('./smoke-sitepasskeys')({ app, win, js, wait, waitFor, shot, check, VC, getQuick, test, relock, MASTER });
 
+      // Password changes, the change queue, the breach check, Change Email Everywhere.
+      extraSecrets.push(...(await require('./smoke-changes')({ app, win, js, wait, waitFor, shot, check, VC, test, relock, MASTER, opened, clipboard, vaultPath })).secrets);
+
       // Optional: the same in a real Edge window, incl. webauthn.io (VAULT_EXT_E2E=1 npm run smoke).
       if (process.env.VAULT_EXT_E2E) {
         const { code: code2 } = bridge.startPairing();
-        await require('./ext-e2e')({ code: code2, check, shotsDir: shots, wait, master: MASTER, pipe: bridge.state().pipe, hostExe, test, win, js, waitFor, relock });
+        await require('./ext-e2e')({ area: test.testWorkArea(), code: code2, check, shotsDir: shots, wait, master: MASTER, pipe: bridge.state().pipe, hostExe, test, win, js, waitFor, relock });
         for (const c of bridge.clients()) if (c.id !== store.clientId) bridge.remove(c.id);
         bridge.cancelPairing();
       }
@@ -472,7 +491,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
   } catch (err) {
     check('smoke run crashed', false, err && err.stack);
   }
-  try { require('./smoke-security').scanDisk({ app, check, secrets: [MASTER, 'gh-Pa55-word', 'another horse battery', 'brand new master pw', 'my old vault pw', 'old-Pa55'] }); } catch (err) { check('disk scan crashed', false, err.stack); }
+  try { require('./smoke-security').scanDisk({ app, check, secrets: [MASTER, 'gh-Pa55-word', 'another horse battery', 'brand new master pw', 'my old vault pw', 'old-Pa55', ...extraSecrets] }); } catch (err) { check('disk scan crashed', false, err.stack); }
   const failed = results.filter((x) => !x).length;
   console.log(`\n${results.length - failed}/${results.length} checks passed. Screenshots: ${shots}`);
   try { fs.rmSync(app.getPath('userData'), { recursive: true, force: true }); } catch {}

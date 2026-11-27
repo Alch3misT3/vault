@@ -76,6 +76,13 @@ async function load(query) {
 
 function render(query) {
   const list = $('#list');
+  // A password change waiting for this site: one clear button that fills the site's change form.
+  const changing = isWeb() && !query ? items.find((i) => i.changing && i.match) : null;
+  $('#changeBar').hidden = !changing;
+  if (changing) {
+    $('#changeTitle').textContent = `New password ready for ${changing.title}`;
+    $('#changeGo').onclick = () => fillChangeItem(changing);
+  }
   if (!items.length) {
     list.replaceChildren(h('li', { class: 'empty' }, query ? 'Nothing matches.' : isWeb() ? 'Search above to fill a different account.' : 'Type to search your accounts.'));
     return;
@@ -84,7 +91,7 @@ function render(query) {
     class: 'row', role: 'option', 'aria-selected': String(i === sel), title: isWeb() ? 'Fill ' + it.title : it.title,
     onclick: () => fillItem(it), onmousemove: () => { if (sel !== i) { sel = i; paint(); } },
   }, tile(it),
-  h('div', { class: 'text' }, h('div', { class: 'title' }, it.title), h('div', { class: 'sub' }, it.username || it.host || 'No user name')),
+  h('div', { class: 'text' }, h('div', { class: 'title' }, it.title), h('div', { class: 'sub' + (it.changing ? ' changing' : '') }, it.changing ? 'Changing password' : it.username || it.host || 'No user name')),
   h('div', { class: 'acts' },
     it.username ? h('button', { class: 'mini', title: 'Copy user name', 'aria-label': 'Copy user name', onclick: (e) => { e.stopPropagation(); copyItem(it, 'username'); } }, icon('i-user')) : null,
     it.hasPassword ? h('button', { class: 'mini', title: 'Copy password (clears in 30 s)', 'aria-label': 'Copy password', onclick: (e) => { e.stopPropagation(); copyItem(it, 'password'); } }, icon('i-key')) : null,
@@ -99,6 +106,13 @@ async function fillItem(it) {
     const res = await VaultClient.fill(tab, it);
     if (!res || !res.filled) return status('No login form found on this page', 'warn');
     window.close();
+  } catch (err) { status(/Cannot access|cannot be scripted|Missing host/i.test(err.message) ? 'Vault can’t fill on this page' : err.message, 'warn'); }
+}
+async function fillChangeItem(it) {
+  try {
+    const res = await VaultClient.fillChange(tab, it);
+    if (!res || !res.filled) return status('No password fields found on this page', 'warn');
+    status(res.current && res.next ? 'Filled. Press the site’s save button.' : res.next ? 'New password filled. Press the site’s save button.' : 'Current password filled', 'ok');
   } catch (err) { status(/Cannot access|cannot be scripted|Missing host/i.test(err.message) ? 'Vault can’t fill on this page' : err.message, 'warn'); }
 }
 async function fillCodeItem(it) {

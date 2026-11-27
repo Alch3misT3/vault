@@ -15,6 +15,11 @@ const state = {
   firstRun: false,
   view: 'all',       // 'all' | 'favorites' | 'codes' | 'security' | 'deleted'
   showHistory: false,
+  breach: new Map(), // id -> how often its password appears in known breaches (only if the check is on)
+  breachOn: false,
+  ui: { changeQueue: null, emailChange: null }, // progress kept inside the vault
+  tool: null,        // 'email': the Change Email Everywhere checklist in the detail pane
+  changeAwait: null, // { id, at }: a change page was opened; ask how it went when the window is back
 };
 const BIN_DAYS = 30;
 const DAY = 86400000;
@@ -249,10 +254,10 @@ function isWeak(pw) {
 const OLD_DAYS = 365;
 const live = () => state.items.filter((i) => !i.deletedAt);
 
-let healthCache = { items: null, map: new Map() };
-// id -> [{ kind: 'reused'|'weak'|'old', text, others? }]
+let healthCache = { items: null, breach: null, map: new Map() };
+// id -> [{ kind: 'breached'|'reused'|'weak'|'old', text, others?, count? }]
 function health() {
-  if (healthCache.items === state.items) return healthCache.map;
+  if (healthCache.items === state.items && healthCache.breach === state.breach) return healthCache.map;
   const items = live();
   const byPw = new Map();
   for (const it of items) if (it.password) byPw.set(it.password, [...(byPw.get(it.password) || []), it]);
@@ -260,6 +265,8 @@ function health() {
   const now = Date.now();
   for (const it of items) {
     const out = [];
+    const seen = state.breach.get(it.id);
+    if (seen) out.push({ kind: 'breached', text: 'Found in a data breach', count: seen });
     const same = it.password ? byPw.get(it.password).filter((x) => x.id !== it.id) : [];
     if (same.length) out.push({ kind: 'reused', text: `Reused on ${same.length + 1} accounts`, others: same.map((x) => x.title) });
     if (isWeak(it.password)) out.push({ kind: 'weak', text: 'Weak password' });
@@ -267,7 +274,7 @@ function health() {
     if (it.password && changed && now - changed > OLD_DAYS * DAY) out.push({ kind: 'old', text: 'Not changed in over a year' });
     if (out.length) map.set(it.id, out);
   }
-  healthCache = { items: state.items, map };
+  healthCache = { items: state.items, breach: state.breach, map };
   return map;
 }
 
@@ -331,6 +338,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function showLock() {
   const seq = ++lockSeq;
   // Secrets leave memory at once; the window then sinks away before the lock card rises.
+  state.breach = new Map(); state.ui = { changeQueue: null, emailChange: null }; state.tool = null; state.changeAwait = null;
   state.items = []; state.sitePasskeys = []; state.selectedId = null; state.draft = null; state.mode = 'view'; state.reveal.clear(); state.query = ''; state.view = 'all'; state.showHistory = false;
   logos.map.clear();
   window.fx.closeMenu();
@@ -450,6 +458,7 @@ function unlocked(items) {
   render();
   requestLogos();
   loadSitePasskeys().then(() => { if (!$('#app').hidden) renderList(); });
+  loadVaultExtras();
   $('#q').focus();
   bumpIdle();
 }
@@ -460,7 +469,7 @@ async function lockNow() {
 }
 
 // ---------- search ----------
-const SEVERITY = { reused: 0, weak: 1, old: 2 };
+const SEVERITY = { breached: 0, reused: 1, weak: 2, old: 3 };
 function inView() {
   const v = state.view;
   if (v === 'deleted') return state.items.filter((i) => i.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt);
@@ -554,6 +563,7 @@ async function setView(id) {
   if (state.view === id) return;
   if (state.mode !== 'view' && !(await cancelEdit())) return;
   state.view = id;
+  state.tool = null;
   state.showHistory = false;
   state.selectedId = null;
   state.animateRows = true;
@@ -562,6 +572,7 @@ async function setView(id) {
 
 function rowSub(it) {
   if (it.passkey) return it.username || 'Passkey';
+  if (it.pending && !it.deletedAt) return h('span', { class: 'pending-sub' }, 'Changing password');
   if (state.view === 'deleted') {
     const days = Math.max(0, BIN_DAYS - Math.floor((Date.now() - it.deletedAt) / DAY));
     return `${days} ${days === 1 ? 'day' : 'days'} left`;
@@ -577,6 +588,7 @@ function rowSub(it) {
 function renderList() {
   const list = $('#list');
   const counts = renderViews();
+  renderListTool();
   const res = matches();
   const q = state.query.trim();
   const v = VIEWS.find((x) => x.id === state.view);
@@ -646,6 +658,8 @@ function renderDetail() {
   const it = current();
   setTint(state.mode !== 'view' ? state.draft : it);
   if (state.mode === 'edit' || state.mode === 'new') return d.replaceChildren(...editView());
+  if (state.tool === 'email') { lastShownId = null; return d.replaceChildren(...emailToolView()); }
+  if (state.tool === 'queue-done' && state.ui.changeQueue) { lastShownId = null; return d.replaceChildren(...queueDoneView()); }
   if (!it) return d.replaceChildren(h('div', { class: 'detail-bar drag' }), blankView());
   if (it.passkey) { lastShownId = it.id; return d.replaceChildren(...passkeyDetail(it)); }
   const fly = state.flyTile && lastShownId !== it.id;
@@ -704,6 +718,7 @@ function detailView(it) {
         'aria-pressed': String(!!it.favorite), 'aria-label': it.favorite ? 'Remove from Favorites' : 'Add to Favorites',
         title: (it.favorite ? 'Remove from Favorites' : 'Add to Favorites') + ' (Ctrl+D)',
       }, icon(it.favorite ? 'i-star-fill' : 'i-star')),
+      window.siteOfItem(it) ? h('button', { class: 'glass-btn glass', id: 'changePwBtn', onclick: () => changePassword(it), title: 'Make a new password and open the site’s change-password page' }, it.pending ? 'Continue Change' : 'Change Password') : null,
       h('button', { class: 'glass-btn glass', onclick: () => startEdit(it), title: 'Edit (Ctrl+E)' }, 'Edit'));
 
   const hero = h('div', { class: 'hero' }, tile(it, true),
@@ -716,13 +731,25 @@ function detailView(it) {
     h('strong', {}, 'In Recently Deleted'),
     h('span', {}, `Deleted ${fmtDate(it.deletedAt)}. It’s removed for good on ${fmtDate(it.deletedAt + BIN_DAYS * DAY)}.`))) : null;
 
-  const issues = deleted ? null : health().get(it.id);
+  const issues = deleted || it.pending ? null : health().get(it.id);
   const security = issues ? h('div', { class: 'notice warn' }, icon('i-shield'), h('div', {},
-    ...issues.map((x) => h('div', { class: 'issue' }, h('strong', {}, x.text), x.kind === 'reused'
+    ...issues.map((x) => h('div', { class: 'issue' }, h('strong', {}, x.text), x.kind === 'breached'
+      ? h('span', {}, `This password shows up ${x.count.toLocaleString()} ${x.count === 1 ? 'time' : 'times'} in known data breaches, so attackers try it first. Change it.`)
+      : x.kind === 'reused'
       ? h('span', {}, `Also used for ${x.others.slice(0, 3).join(', ')}${x.others.length > 3 ? ` and ${x.others.length - 3} more` : ''}. If one site leaks it, the others are open too.`)
       : x.kind === 'weak' ? h('span', {}, 'It’s short or easy to guess.')
       : h('span', {}, `Last changed ${fmtDate(it.pwChangedAt || it.createdAt)}.`))),
-    link ? h('button', { class: 'btn-plain notice-btn', onclick: () => { openLink(link.url); } }, 'Change Password on Website', icon('i-open')) : null)) : null;
+    window.siteOfItem(it) ? h('button', { class: 'btn-plain notice-btn', onclick: () => changePassword(it) }, 'Change Password…', icon('i-open')) : null)) : null;
+
+  // A password change in progress: both passwords stay at hand until you say how it went.
+  const pend = !deleted && it.pending ? it.pending : null;
+  const changing = pend ? h('div', { class: 'notice pending', id: 'pendingNotice' }, icon('i-key'), h('div', {},
+    h('strong', {}, 'Password change in progress'),
+    h('span', {}, `Vault made a new password on ${fmtDate(pend.createdAt)}. Change it on the site (the Vault extension can fill both fields), then tell Vault how it went. Until then the current password stays in use.`),
+    h('div', { class: 'notice-actions' },
+      h('button', { class: 'btn-primary small', id: 'pendingYes', onclick: () => answerChange(it, true) }, 'It Worked'),
+      h('button', { class: 'btn-secondary small', id: 'pendingNo', onclick: () => answerChange(it, false) }, 'It Didn’t Work'),
+      h('button', { class: 'btn-plain notice-btn', onclick: () => changePassword(it) }, 'Open Change Page', icon('i-open'))))) : null;
 
   const cfg = otpOf(it);
   const otpF = window.otp.otpField(it);
@@ -735,7 +762,8 @@ function detailView(it) {
 
   const main = h('div', { class: 'group' },
     valueRow({ label: 'User name', value: it.username, id: 'u', copyName: 'User name' }),
-    valueRow({ label: 'Password', value: it.password, secret: true, id: 'pw', copyName: 'Password' }),
+    valueRow({ label: pend ? 'Current password' : 'Password', value: it.password, secret: true, id: 'pw', copyName: pend ? 'Current password' : 'Password' }),
+    pend ? valueRow({ label: 'New password', value: pend.value, secret: true, id: 'pwnew', copyName: 'New password' }) : null,
     codeRow,
     link ? valueRow({ label: 'Website', value: link.url.replace(/^https:\/\//, '').replace(/\/$/, ''), link: deleted ? null : link.url }) : null);
 
@@ -745,7 +773,12 @@ function detailView(it) {
     h('div', { class: 'group' }, otherFields.map((f) => valueRow({ label: f.label || 'Field', value: f.value, secret: f.secret, id: f.id, copyName: f.label || 'Field' }))),
   ] : [];
 
-  const hist = it.history || [];
+  const hist = (it.history || []).filter((x) => !isNameHist(x));
+  const names = (it.history || []).filter(isNameHist);
+  const nameHistory = names.length ? [
+    h('div', { class: 'section-label' }, 'Previous User Names'),
+    h('div', { class: 'group' }, names.map((p, i) => valueRow({ label: 'Until ' + fmtDate(p.changedAt), value: p.value, id: 'hn' + i, copyName: 'Old user name' }))),
+  ] : [];
   const history = hist.length ? [
     h('div', { class: 'section-label' }, 'Password History'),
     h('div', { class: 'group' },
@@ -765,7 +798,17 @@ function detailView(it) {
   const swap = lastShownId !== it.id;
   lastShownId = it.id;
   setTimeout(tickCodes, 0);
-  return [bar, h('div', { class: 'detail-scroll' }, h('div', { class: 'detail-inner' + (swap ? ' swap' : '') }, hero, notice, security, main, ...extras, ...history, ...notes, meta))];
+  return [bar, h('div', { class: 'detail-scroll' }, h('div', { class: 'detail-inner' + (swap ? ' swap' : '') }, queueBar(it), hero, notice, changing, security, main, ...extras, ...history, ...nameHistory, ...notes, meta))];
+}
+
+// History keeps the last 10 passwords and, separately, the last 10 user names ({ kind: 'username' }).
+const HISTORY_MAX = 10;
+const isNameHist = (x) => x && x.kind === 'username';
+function addHistory(list, entry) {
+  const all = [entry, ...(list || [])];
+  const names = all.filter(isNameHist).slice(0, HISTORY_MAX);
+  const pws = all.filter((x) => !isNameHist(x)).slice(0, HISTORY_MAX);
+  return all.filter((x) => names.includes(x) || pws.includes(x));
 }
 
 // ---------- edit ----------
@@ -816,9 +859,7 @@ async function saveEdit() {
     .map((f) => ({ ...f, label: f.label.trim() || 'Field', ...(f.kind === 'otp' ? { value: f.value.trim() } : {}) }));
   const old = state.mode === 'edit' ? current() : null;
   if (!old || old.password !== d.password) d.pwChangedAt = Date.now();
-  if (old && old.password && old.password !== d.password) {
-    d.history = [{ value: old.password, changedAt: Date.now() }, ...(old.history || [])].slice(0, 10);
-  }
+  if (old && old.password && old.password !== d.password) d.history = addHistory(old.history, { value: old.password, changedAt: Date.now() });
   d.notes = d.notes.replace(/\s+$/, '');
   d.updatedAt = Date.now();
   delete d._showPw;
@@ -828,6 +869,7 @@ async function saveEdit() {
   state.selectedId = d.id; state.mode = 'view'; state.draft = null; state.reveal.clear();
   render();
   toast('Saved');
+  if (!old || old.password !== d.password) refreshBreaches();
 }
 
 function editView() {
@@ -946,8 +988,9 @@ function updateHeroTile() {
 
 // ---------- actions ----------
 async function select(id, fly) {
-  if (id === state.selectedId && state.mode === 'view') return;
+  if (id === state.selectedId && state.mode === 'view' && !state.tool) return;
   if (state.mode !== 'view' && !(await cancelEdit())) return;
+  state.tool = null;
   state.selectedId = id;
   state.reveal.clear();
   state.flyTile = !!fly; // clicked in the list: the tile flies from the row into the header
@@ -1026,6 +1069,7 @@ async function rowMenu(it, e) {
     it.password && { label: 'Copy Password', value: 'copy-password', key: 'Ctrl+Shift+C' },
     cfg && { label: 'Copy Verification Code', value: 'copy-code' },
     link && { label: 'Open Login Page', value: 'open', key: 'Ctrl+O' },
+    window.siteOfItem(it) && { label: it.pending ? 'Continue Password Change…' : 'Change Password…', value: 'change-pw' },
     'sep',
     { label: it.favorite ? 'Remove from Favorites' : 'Add to Favorites', value: 'favorite', key: 'Ctrl+D' },
     { label: 'Edit', value: 'edit', key: 'Ctrl+E' },
@@ -1038,6 +1082,7 @@ async function rowMenu(it, e) {
   if (pick === 'copy-password') copy(it.password, true, 'Password');
   if (pick === 'copy-code' && cfg) copy(await otpCode(cfg), true, 'Code');
   if (pick === 'open' && link) openLink(link.url);
+  if (pick === 'change-pw') changePassword(it);
   if (pick === 'favorite') toggleFavorite(it);
   if (pick === 'edit') { await select(it.id); startEdit(it); }
   if (pick === 'delete') deleteItem(it);
@@ -1170,16 +1215,19 @@ async function moreMenu(e) {
     { label: 'Connect a Browser…', value: 'browser' },
     { label: 'Change Master Password…', value: 'change-password' },
     { label: 'Unlock With Passkey…', value: 'passkeys' },
+    { label: 'Change Email Everywhere…', value: 'email-change' },
     'sep',
     { label: 'Quick Search', value: 'quick', key: 'Ctrl+Shift+Space' },
     p.openAtLogin != null ? { label: 'Open Vault When Windows Starts', value: 'login-item', checked: p.openAtLogin } : null,
     { label: 'Download Site Logos', value: 'logos', checked: p.logos },
+    { label: 'Check for Breached Passwords', value: 'breach', checked: !!p.breachCheck },
     { label: 'Check for Updates…', value: 'check-updates' },
     { label: 'Show Vault File', value: 'show-file' },
   ], { anchor: btn, align: 'start', keyboard: !!e && e.detail === 0, label: 'More', opener: btn });
   if (pick === 'quick') api.showQuick();
   else if (pick === 'login-item') api.setPref('openAtLogin', !p.openAtLogin);
   else if (pick === 'logos') setLogos(!p.logos);
+  else if (pick === 'breach') setBreachCheck(!p.breachCheck);
   else if (pick === 'show-file') api.showVaultFile();
   else handleCommand(pick);
 }
@@ -1194,6 +1242,7 @@ function handleCommand(cmd) {
   if (cmd === 'restore') restoreFlow();
   if (cmd === 'change-password') changePwFlow();
   if (cmd === 'passkeys') passkeysFlow();
+  if (cmd === 'email-change') openEmailTool();
   if (cmd === 'check-updates') manualUpdateCheck();
   if (cmd === 'generator') generatorFlow(false);
   if (cmd === 'browser') browserFlow();

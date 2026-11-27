@@ -32,6 +32,7 @@
       "vaultfile.js",
       "passkeys.js",
       "nativehost.js",
+      "pwchange.js",
       "psl.txt",
       "preload-prompt.js",
       "preload.js",

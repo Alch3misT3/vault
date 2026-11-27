@@ -13,7 +13,9 @@ const security = require('./security');
 // Test/dev switches only exist when running from source, never in the built app.
 const DEV = !app.isPackaged;
 const SHOTS = DEV && process.argv.includes('--screenshots'); // README screenshots, same sandbox as the smoke test
-const SMOKE = DEV && (process.argv.includes('--smoke') || SHOTS);
+// A second Vault started by the smoke test (and then killed) to check a forced close loses nothing.
+const SMOKE_CHILD = DEV && process.argv.includes('--smoke-child');
+const SMOKE = DEV && (process.argv.includes('--smoke') || SHOTS || SMOKE_CHILD);
 const MAKE_ICON = DEV && process.argv.includes('--make-icon');
 const START_HIDDEN = process.argv.includes('--hidden'); // started with Windows: stay in the notification area
 const HOTKEY = 'CommandOrControl+Shift+Space';
@@ -26,7 +28,7 @@ security.hardenApp({ dev: DEV });
 
 if (SMOKE) {
   // Never touch the real vault while testing.
-  app.setPath('userData', path.join(app.getPath('temp'), 'vault-smoke-' + Date.now()));
+  app.setPath('userData', SMOKE_CHILD && process.env.VAULT_SMOKE_DIR ? process.env.VAULT_SMOKE_DIR : path.join(app.getPath('temp'), 'vault-smoke-' + Date.now()));
   // Screenshots of a window that other windows cover (Windows otherwise skips painting it). Test runs only.
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 } else if (PORTABLE_DIR) {
@@ -203,8 +205,56 @@ function openUrl(url) {
   return true;
 }
 
+// ---------- Password changes and the breach check (pwchange.js) ---------------
+const PW = require('./pwchange')({ links: require('./src/links.js') });
+const liveItem = (id) => (sessionItems() || []).find((x) => x.id === id && !x.deletedAt) || null;
+const breachOn = () => prefs().breachCheck === true;
+
+// The window saved the new password as "pending" first; now open the site's change-password page.
+async function openChangePage(id) {
+  const it = session && liveItem(String(id));
+  if (!it || !it.pending) return null;
+  activity();
+  const r = await PW.changePage(it);
+  if (!r || !openUrl(r.url)) return null;
+  return r;
+}
+
+// Small settings that belong to the vault, not to this PC (queue and checklist progress, breach
+// results), saved inside the encrypted vault next to the accounts as they are on disk.
+const UI_KEYS = ['changeQueue', 'emailChange'];
+function saveExtra(patch) {
+  const items = sessionItems();
+  if (!session || !items) return false;
+  const before = session.extra;
+  session.extra = { ...(session.extra || {}), ...patch };
+  try { persist(items); } catch { session.extra = before; return false; }
+  return true;
+}
+
+let breachRun = null;
+async function checkBreaches() {
+  if (!session || !breachOn()) return { on: breachOn(), counts: {} };
+  if (breachRun) return breachRun;
+  breachRun = (async () => {
+    const items = sessionItems() || [];
+    const r = await PW.breachCheck(items, (session && session.extra && session.extra.breach) || {});
+    if (!session) return { on: true, counts: {} };
+    if (JSON.stringify(r.cache) !== JSON.stringify(session.extra.breach || {})) saveExtra({ breach: r.cache });
+    return { on: true, counts: r.counts, failed: r.failed };
+  })().finally(() => { breachRun = null; });
+  return breachRun;
+}
+
 // ---------- Window -----------------------------------------------------------
 let win = null;
+
+// Test runs put their windows on a second screen when there is one, out of the way of the main screen.
+function testWorkArea() {
+  const main = screen.getPrimaryDisplay();
+  return (screen.getAllDisplays().find((d) => d.id !== main.id) || main).workArea;
+}
+const placeArea = () => (SMOKE ? testWorkArea() : screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea);
 
 // IPC: every handler belongs to one page; calls from anything else are refused (security.js).
 const guard = security.makeGuard({ 'index.html': () => win, 'quick.html': () => quick, 'prompt.html': () => prompt });
@@ -597,14 +647,25 @@ handle('app:note', (_e, text) => { note = String(text).slice(0, 120); return tru
 handle('app:take-note', () => { const n = note; note = null; return n; });
 handle('clip:copy', async (_e, text, isSecret) => { await copy(text, !!isSecret); return true; });
 handle('open:url', (_e, url) => openUrl(url));
+handle('pw:change-page', (_e, id) => openChangePage(id));
+handle('breach:check', () => checkBreaches());
+handle('vault:ui', () => (session ? Object.fromEntries(UI_KEYS.map((k) => [k, (session.extra.ui || {})[k] || null])) : null));
+handle('vault:ui-save', (_e, key, value) => {
+  if (!session || !UI_KEYS.includes(key)) return { ok: false };
+  let v = null;
+  try { v = value == null ? null : JSON.parse(JSON.stringify(value)); } catch { return { ok: false }; }
+  if (v && JSON.stringify(v).length > 200000) return { ok: false };
+  return { ok: saveExtra({ ui: { ...(session.extra.ui || {}), [key]: v } }) };
+});
 
 // The ••• and right-click menus are drawn by the window itself (Liquid Glass); these do what they can't.
-const appPrefs = () => ({ openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false, gen: prefs().gen || null });
+const appPrefs = () => ({ openAtLogin: canOpenAtLogin() ? app.getLoginItemSettings().openAtLogin : null, logos: prefs().logos !== false, gen: prefs().gen || null, breachCheck: breachOn() });
 handle('app:prefs', () => appPrefs());
 handle('app:set-pref', (_e, key, value) => {
   if (key === 'openAtLogin') setOpenAtLogin(!!value);
   if (key === 'logos') logos.setEnabled(!!value);
   if (key === 'gen') setPref('gen', cleanGen(value));
+  if (key === 'breachCheck') setPref('breachCheck', value === true);
   return appPrefs();
 });
 // Password generator settings (not secret).
@@ -656,7 +717,7 @@ function showQuick() {
   if (!quick || quick.isDestroyed()) createQuick();
   if (quick.isVisible() && !quickHiding) return hideQuick();
   quickHiding = false;
-  const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const workArea = placeArea();
   const [w, h] = quick.getSize();
   quick.setPosition(Math.round(workArea.x + (workArea.width - w) / 2), Math.round(workArea.y + workArea.height * 0.22));
   const go = () => { quick.webContents.send('quick:show'); if (SMOKE) quick.showInactive(); else { quick.setOpacity(0); quick.show(); quick.focus(); fadeQuick(0, 1); } };
@@ -903,7 +964,7 @@ function createPrompt() {
 function showPrompt() {
   if (!prompt || prompt.isDestroyed()) createPrompt();
   promptDirty = true;
-  const { workArea } = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const workArea = placeArea();
   const [w, h] = prompt.getSize();
   prompt.setPosition(Math.round(workArea.x + (workArea.width - w) / 2), Math.round(workArea.y + workArea.height * 0.2));
   const go = () => {
@@ -1035,10 +1096,11 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
       createQuick();
       if (!globalShortcut.register(HOTKEY, showQuick)) console.warn('Quick-search hotkey is taken by another app');
     }
-    if (SHOTS) require('./scripts/screenshots')({ app, win, nativeTheme, showQuick, getQuick: () => quick });
-    else if (SMOKE && process.env.VAULT_REAL_LOGOS) require('./scripts/real-logos')({ win, nativeTheme, getLogos: () => logos });
+    if (SHOTS) require('./scripts/screenshots')({ testWorkArea, app, win, nativeTheme, showQuick, getQuick: () => quick });
+    else if (SMOKE_CHILD) require('./scripts/smoke-child')({ win, PW, opened });
+    else if (SMOKE && process.env.VAULT_REAL_LOGOS) require('./scripts/real-logos')({ testWorkArea, win, nativeTheme, getLogos: () => logos });
     else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge, getLogos: () => logos,
-      test: { guard, idle, getSession: () => session, lockVault, clearClipboard, copy, logUpdate, getQuickWin: () => quick, getPrompt: () => prompt, sitePasskeys } });
+      test: { testWorkArea, PW, getExtra: () => session && session.extra, guard, idle, getSession: () => session, lockVault, clearClipboard, copy, logUpdate, getQuickWin: () => quick, getPrompt: () => prompt, sitePasskeys } });
   });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { lock(); app.quit(); });

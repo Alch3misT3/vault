@@ -81,6 +81,73 @@ const NAMES = {
   amazon: 'amazon.com', ea: 'ea.com', ubisoft: 'ubisoft.com',
 };
 
+// Where to change the password, for sites that don't answer at /.well-known/change-password
+// (the W3C standard Vault tries first). Checked by hand; anything else falls back to the home page.
+const CHANGE_PASSWORD_PAGES = {
+  'google.com': 'https://myaccount.google.com/signinoptions/password',
+  'gmail.com': 'https://myaccount.google.com/signinoptions/password',
+  'youtube.com': 'https://myaccount.google.com/signinoptions/password',
+  'microsoft.com': 'https://account.live.com/password/Change',
+  'live.com': 'https://account.live.com/password/Change',
+  'outlook.com': 'https://account.live.com/password/Change',
+  'hotmail.com': 'https://account.live.com/password/Change',
+  'xbox.com': 'https://account.live.com/password/Change',
+  'office.com': 'https://account.live.com/password/Change',
+  'facebook.com': 'https://accountscenter.facebook.com/password_and_security/password/change',
+  'instagram.com': 'https://accountscenter.instagram.com/password_and_security/password/change',
+  'x.com': 'https://x.com/settings/password',
+  'twitter.com': 'https://x.com/settings/password',
+  'linkedin.com': 'https://www.linkedin.com/mypreferences/d/change-password',
+  'snapchat.com': 'https://accounts.snapchat.com/v2/password',
+  'twitch.tv': 'https://www.twitch.tv/settings/security',
+  'netflix.com': 'https://www.netflix.com/password',
+  'spotify.com': 'https://www.spotify.com/account/change-password/',
+  'paypal.com': 'https://www.paypal.com/myaccount/security/',
+  'github.com': 'https://github.com/settings/security',
+  'steampowered.com': 'https://help.steampowered.com/wizard/HelpChangePassword',
+  'steamcommunity.com': 'https://help.steampowered.com/wizard/HelpChangePassword',
+  'epicgames.com': 'https://www.epicgames.com/account/password',
+  'ea.com': 'https://myaccount.ea.com/cp-ui/security/index',
+  'ubisoft.com': 'https://account.ubisoft.com/security-settings',
+  'dropbox.com': 'https://www.dropbox.com/account/security',
+  'cloudflare.com': 'https://dash.cloudflare.com/profile/authentication',
+  'yahoo.com': 'https://login.yahoo.com/account/security',
+  'proton.me': 'https://account.proton.me/u/0/mail/account-password',
+  'canva.com': 'https://www.canva.com/settings/login-and-security',
+};
+
+// Where to change the account's email address ("Change Email Everywhere"). Falls back to the home page.
+const ACCOUNT_EMAIL_PAGES = {
+  'google.com': 'https://myaccount.google.com/email',
+  'youtube.com': 'https://myaccount.google.com/email',
+  'microsoft.com': 'https://account.live.com/names/manage',
+  'live.com': 'https://account.live.com/names/manage',
+  'outlook.com': 'https://account.live.com/names/manage',
+  'hotmail.com': 'https://account.live.com/names/manage',
+  'xbox.com': 'https://account.live.com/names/manage',
+  'office.com': 'https://account.live.com/names/manage',
+  'facebook.com': 'https://accountscenter.facebook.com/personal_info/contact_points',
+  'instagram.com': 'https://accountscenter.instagram.com/personal_info/contact_points',
+  'x.com': 'https://x.com/settings/email',
+  'twitter.com': 'https://x.com/settings/email',
+  'linkedin.com': 'https://www.linkedin.com/mypreferences/d/manage-email-addresses',
+  'reddit.com': 'https://www.reddit.com/settings/account',
+  'twitch.tv': 'https://www.twitch.tv/settings/security',
+  'netflix.com': 'https://www.netflix.com/email',
+  'spotify.com': 'https://www.spotify.com/account/profile/',
+  'paypal.com': 'https://www.paypal.com/myaccount/settings/',
+  'github.com': 'https://github.com/settings/emails',
+  'steampowered.com': 'https://help.steampowered.com/wizard/HelpChangeEmail',
+  'steamcommunity.com': 'https://help.steampowered.com/wizard/HelpChangeEmail',
+  'epicgames.com': 'https://www.epicgames.com/account/personal',
+  'ea.com': 'https://myaccount.ea.com/cp-ui/aboutme/index',
+  'ubisoft.com': 'https://account.ubisoft.com/account-information',
+  'dropbox.com': 'https://www.dropbox.com/account/general',
+  'cloudflare.com': 'https://dash.cloudflare.com/profile',
+  'yahoo.com': 'https://login.yahoo.com/account/personalinfo',
+  'canva.com': 'https://www.canva.com/settings/your-account',
+};
+
 function hostOf(input) {
   const raw = String(input || '').trim();
   if (!raw) return null;
@@ -107,6 +174,37 @@ function knownLogin(hostname) {
     h = h.slice(i + 1);
   }
   return null;
+}
+
+// Looks a host up in one of the maps above, walking up subdomains (accounts.netflix.com -> netflix.com).
+function lookUp(map, hostname) {
+  let h = bareHost(hostname);
+  while (h) {
+    if (map[h]) return map[h];
+    const i = h.indexOf('.');
+    if (i < 0 || h.indexOf('.', i + 1) < 0) break;
+    h = h.slice(i + 1);
+  }
+  return null;
+}
+
+// The site an account belongs to: { host (as typed, e.g. www.netflix.com), origin } or null.
+function siteOfItem(item) {
+  const site = (item && item.website || '').trim();
+  if (site) {
+    const u = hostOf(site);
+    return u ? { host: u.hostname.toLowerCase(), origin: 'https://' + u.host.toLowerCase() } : null;
+  }
+  const l = loginLink(item);
+  return l ? { host: l.host, origin: 'https://' + l.host } : null;
+}
+const changePasswordPage = (hostname) => lookUp(CHANGE_PASSWORD_PAGES, hostname);
+// { url, known } for an account's email settings: the known page, else the site's home page.
+function accountEmailPage(item) {
+  const s = siteOfItem(item);
+  if (!s) return null;
+  const known = lookUp(ACCOUNT_EMAIL_PAGES, s.host);
+  return { url: known || s.origin + '/', known: !!known };
 }
 
 /** Returns { url, host, known } or null. */
@@ -160,3 +258,6 @@ const linksRoot = typeof window !== 'undefined' ? window : module.exports;
 linksRoot.loginLink = loginLink;
 linksRoot.brandColor = brandColor;
 linksRoot.hostOf = hostOf;
+linksRoot.siteOfItem = siteOfItem;
+linksRoot.changePasswordPage = changePasswordPage;
+linksRoot.accountEmailPage = accountEmailPage;

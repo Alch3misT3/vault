@@ -764,3 +764,64 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .pk-empty { margin: 0 0 14px 12px; color: var(--secondary); font-size: 12px; }
 .lock-error.pk-info { color: var(--secondary); }
 .pk-detail-note { margin: 14px 16px 0; font-size: 12px; line-height: 1.45; color: var(--secondary); text-wrap: pretty; }
+
+/* ---------- Password changes ---------- */
+.btn-primary.small, .btn-secondary.small { height: 28px; padding: 0 13px; font-size: 12.5px; }
+.notice.pending { background: color-mix(in srgb, var(--accent-fill) 9%, var(--material)); border-color: color-mix(in srgb, var(--accent-fill) 24%, transparent); }
+.notice.pending > svg { color: var(--accent); }
+.notice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.notice-actions .notice-btn { margin: 0; }
+.pending-sub { color: var(--accent); font-weight: 550; }
+.list:focus-within .row[aria-selected="true"] .pending-sub, .sidebar.list-active .row[aria-selected="true"] .pending-sub { color: inherit; }
+.alert-actions.stacked { flex-direction: column; gap: 6px; }
+.alert-actions.stacked button { flex: none; width: 100%; }
+
+/* The change queue: a strip above the account it's on, and its line above the Security list. */
+.queue-bar {
+  display: grid; grid-template-columns: 1fr auto; grid-template-areas: 'text actions' 'track track'; gap: 8px 12px; align-items: center;
+  margin: 2px 0 18px; padding: 11px 10px 12px 16px; border-radius: 18px;
+  background: var(--material); border: 1px solid var(--material-edge);
+  -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%);
+  animation: rise .5s var(--ease) both;
+}
+.queue-text { grid-area: text; display: flex; flex-direction: column; min-width: 0; }
+.queue-text strong { font-size: 13px; font-weight: 650; }
+.queue-text span { font-size: 12px; color: var(--secondary); }
+.queue-actions { grid-area: actions; display: flex; gap: 2px; }
+.queue-actions .btn-plain { height: 28px; font-size: 12.5px; }
+.queue-track { grid-area: track; height: 4px; border-radius: 2px; background: var(--field); overflow: hidden; margin-right: 6px; }
+.queue-track i { display: block; height: 100%; border-radius: 2px; background: var(--accent-fill); transition: width var(--t-settle) var(--spring); }
+.list-tool {
+  margin: 0 12px 10px; padding: 9px 9px 9px 13px; border-radius: 16px; flex: none;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent-fill) 22%, transparent);
+}
+.list-tool-text { flex: 1; min-width: 0; display: flex; flex-direction: column; font-size: 12px; line-height: 1.35; }
+.list-tool-text strong { font-size: 12.5px; font-weight: 650; }
+.list-tool-text span { color: var(--secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Change Email Everywhere */
+.tile.tool-tile { display: grid; place-items: center; --tile: var(--accent-fill); background: linear-gradient(180deg, color-mix(in srgb, var(--accent-fill) 80%, #fff), var(--accent-fill)); color: #fff; }
+.tile.tool-tile svg { width: 34px; height: 34px; }
+.tool-actions { display: flex; justify-content: flex-end; margin: 12px 0 0; }
+.tool-note { margin: 10px 16px 0; font-size: 12px; color: var(--secondary); line-height: 1.45; text-wrap: pretty; }
+.em-row { grid-template-columns: 26px 1fr auto; min-height: 58px; }
+.em-text { display: grid; grid-template-columns: 34px 1fr; gap: 11px; align-items: center; min-width: 0; }
+.em-text .row-sub { font-size: 12px; }
+.em-row.done .row-title { color: var(--secondary); }
+.em-row .btn-plain { height: 28px; font-size: 12.5px; }
+.em-row .btn-plain svg { width: 13px; height: 13px; }
+.em-check { position: relative; width: 22px; height: 22px; }
+.em-check input { position: absolute; inset: 0; margin: 0; opacity: 0; }
+.em-box {
+  display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--secondary) 60%, transparent); color: transparent;
+  transition: background-color .2s, border-color .2s, color .2s, transform var(--t-settle) var(--spring-bounce);
+}
+.em-box svg { width: 14px; height: 14px; }
+.em-check input:checked + .em-box { background: var(--accent-fill); border-color: var(--accent-fill); color: #fff; }
+.em-check input:checked + .em-box svg { animation: tick-in .5s var(--spring-bounce) both; }
+.em-check input:focus-visible + .em-box { outline: 2.5px solid var(--accent-fill); outline-offset: 2px; }
+.em-check input:active + .em-box { transform: scale(.86); }
+/* app icon holding a line icon (key, check) instead of the Vault mark */
+.app-icon.glyph { color: #fff; padding: 13px; }

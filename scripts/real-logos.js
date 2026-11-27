@@ -3,14 +3,14 @@
 // Run: VAULT_REAL_LOGOS=1 npx electron . --smoke
 const fs = require('fs');
 const path = require('path');
-module.exports = async function ({ win, nativeTheme, getLogos }) {
+module.exports = async function ({ testWorkArea, win, nativeTheme, getLogos }) {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const js = (c) => win.webContents.executeJavaScript(c);
   const shots = path.join(__dirname, '..', 'smoke-shots');
   fs.mkdirSync(shots, { recursive: true });
   const shot = async (n) => { await wait(400); fs.writeFileSync(path.join(shots, n + '.png'), (await win.webContents.capturePage()).toPNG()); };
   await new Promise((r) => (win.webContents.isLoading() ? win.webContents.once('did-finish-load', r) : r()));
-  win.setBounds({ x: 40, y: 40, width: 1080, height: 720 }); win.showInactive(); nativeTheme.themeSource = 'light';
+  const area = testWorkArea(); win.setBounds({ x: area.x + 40, y: area.y + 40, width: 1080, height: 720 }); win.showInactive(); nativeTheme.themeSource = 'light';
   await wait(800);
   await js(`(() => { for (const id of ['pw1','pw2']) { const el = document.getElementById(id); el.value = 'real logos test'; el.dispatchEvent(new Event('input')); } document.getElementById('createGo').click(); })()`);
   await wait(1500);

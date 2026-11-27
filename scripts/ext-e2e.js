@@ -18,7 +18,7 @@ const EDGE = process.env.VAULT_E2E_BROWSER || 'C:\\Program Files (x86)\\Microsof
 const DBG = 9333;
 const TEST_HOST = 'local.vault.app.smoke';
 
-module.exports = async function extE2E({ code, check, shotsDir, wait, master, pipe, hostExe, test, win, js, waitFor, relock }) {
+module.exports = async function extE2E({ area, code, check, shotsDir, wait, master, pipe, hostExe, test, win, js, waitFor, relock }) {
   const srcDir = path.join(__dirname, '..', 'browser-extension');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-e2e-'));
   const profile = path.join(tmp, 'profile');
@@ -43,7 +43,8 @@ module.exports = async function extE2E({ code, check, shotsDir, wait, master, pi
 
   const edge = spawn(EDGE, [
     `--user-data-dir=${profile}`, `--load-extension=${extDir}`, `--disable-extensions-except=${extDir}`,
-    `--remote-debugging-port=${DBG}`, '--no-first-run', '--no-default-browser-check', '--disable-features=msEdgeSidebar', 'about:blank',
+    `--remote-debugging-port=${DBG}`, '--no-first-run', '--no-default-browser-check', '--disable-features=msEdgeSidebar',
+    ...(area ? [`--window-position=${area.x + 80},${area.y + 80}`, '--window-size=1280,900'] : []), 'about:blank',
   ], { stdio: 'ignore' });
   const json = async (p, method = 'GET') => (await fetch(`http://127.0.0.1:${DBG}${p}`, { method })).json();
 

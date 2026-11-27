@@ -1,5 +1,6 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
+const MAIL_OPS = ['state', 'set-temp', 'alias-key', 'mailbox', 'cf-zones', 'cf-deploy', 'cf-test', 'cf-remove', 'create', 'remove', 'set-state', 'link', 'check', 'list', 'get', 'seen', 'delete', 'frame'];
 
 contextBridge.exposeInMainWorld('vault', {
   status: () => ipcRenderer.invoke('vault:status'),
@@ -51,4 +52,8 @@ contextBridge.exposeInMainWorld('vault', {
   bridgeFolder: () => ipcRenderer.invoke('bridge:folder'),
   onBridge: (fn) => ipcRenderer.on('bridge', (_e, st) => fn(st)),
   onActivity: (fn) => ipcRenderer.on('activity', () => fn()),
+  // Generated email addresses and their mail: one entry point, a fixed list of operations.
+  mail: (op, ...args) => (MAIL_OPS.includes(op) ? ipcRenderer.invoke('mail:' + op, ...args) : Promise.resolve(null)),
+  onMail: (fn) => ipcRenderer.on('mail', (_e, st) => fn(st)),
+  onMailLink: (fn) => ipcRenderer.on('mail:link', (_e, url) => fn(url)),
 });

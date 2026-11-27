@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src https://vault.localhost/mail-frame/">
   <title>Vault</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -113,6 +113,17 @@
         <button id="changeYes" value="yes" class="btn-primary">It Worked</button>
         <button id="changeNo" value="no" class="btn-secondary">It Didn’t Work</button>
         <button id="changeLater" value="later" class="btn-plain">Not Yet</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="mailDlg" class="alert glass browser-alert mail-alert">
+    <form method="dialog" novalidate>
+      <h2>Email Addresses</h2>
+      <p>Make a new address for each account, so your own email stays private. All mail to these addresses shows up in Vault.</p>
+      <div id="mailSetup"></div>
+      <div class="alert-actions">
+        <button value="ok" class="btn-primary">Done</button>
       </div>
     </form>
   </dialog>
@@ -234,5 +245,7 @@
   <script src="transfer.js"></script>
   <script src="app.js"></script>
   <script src="changes.js"></script>
+  <script src="mailcode.js"></script>
+  <script src="mail.js"></script>
 </body>
 </html>

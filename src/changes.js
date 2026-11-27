@@ -36,10 +36,10 @@ function askChangeResult(it) {
   const dlg = $('#changeDlg');
   const site = (window.siteOfItem(it) || {}).host || it.title;
   $('#changeTitle').textContent = `Did the change on ${site} work?`;
-  $('#changeBody').textContent = 'If the site saved the new password, Vault uses it from now on and keeps the old one in the history. If not, Vault keeps the old one.';
+  $('#changeBody').textContent = 'Choose It Worked only if the site confirmed the new password. Vault then uses it and keeps the old one in the history. Otherwise Vault keeps the old one.';
   dlg.returnValue = '';
   dlg.showModal();
-  $('#changeYes').focus();
+  $('#changeLater').focus(); // Enter never confirms a change by accident
   dlg.addEventListener('close', () => {
     const v = dlg.returnValue;
     if (v === 'yes' || v === 'no') answerChange(state.items.find((x) => x.id === it.id), v === 'yes');
@@ -146,7 +146,8 @@ function renderListTool() {
   const box = $('#listTool');
   if (!box) return;
   const q = queue();
-  const show = state.view === 'security' && !state.query.trim();
+  // (hidden while the queue's own strip is on screen: one place shows the progress)
+  const show = state.view === 'security' && !state.query.trim() && !(q && queueCurrent() && state.selectedId === queueCurrent() && state.mode === 'view' && !state.tool);
   const count = live().filter((i) => health().has(i.id) && window.siteOfItem(i)).length;
   if (!show || (!q && !count)) { box.hidden = true; box.replaceChildren(); return; }
   box.hidden = false;

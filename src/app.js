@@ -30,7 +30,10 @@ const VIEWS = [
   { id: 'security', label: 'Security', icon: 'i-shield', empty: ['All clear', 'No weak, reused or very old passwords.'] },
   { id: 'deleted', label: 'Deleted', icon: 'i-trash', empty: ['Nothing deleted', `Deleted accounts stay here for ${BIN_DAYS} days so you can recover them.`] },
   { id: 'passkeys', label: 'Passkeys', icon: 'i-key', empty: ['No passkeys', 'When a site offers a passkey in Chrome or Edge, Vault can save it here (Vault browser extension).'] },
+  { id: 'mail', label: 'Mail', icon: 'i-mail', empty: ['No mail yet', ''] },
 ];
+// The Mail view shows once generated email addresses are set up.
+const shownViews = () => VIEWS.filter((v) => v.id !== 'mail' || (typeof mailHasView === 'function' && mailHasView()));
 
 // ---------- tiny DOM helper ----------
 function h(tag, props, ...kids) {
@@ -339,6 +342,7 @@ async function showLock() {
   const seq = ++lockSeq;
   // Secrets leave memory at once; the window then sinks away before the lock card rises.
   state.breach = new Map(); state.ui = { changeQueue: null, emailChange: null }; state.tool = null; state.changeAwait = null;
+  if (typeof mail !== 'undefined') Object.assign(mail, { st: null, messages: [], openId: null, current: null });
   state.items = []; state.sitePasskeys = []; state.selectedId = null; state.draft = null; state.mode = 'view'; state.reveal.clear(); state.query = ''; state.view = 'all'; state.showHistory = false;
   logos.map.clear();
   window.fx.closeMenu();
@@ -437,7 +441,10 @@ function unlocked(items) {
   state.items = (items || []).slice().sort(byTitle);
   // Recently Deleted keeps accounts for BIN_DAYS, then they go for good.
   const keep = state.items.filter((i) => !i.deletedAt || Date.now() - i.deletedAt < BIN_DAYS * DAY);
-  if (keep.length !== state.items.length) { state.items = keep; persist(); }
+  if (keep.length !== state.items.length) {
+    for (const gone of state.items.filter((i) => !keep.includes(i))) if (gone.mailAddr) mailApi('remove', gone.mailAddr.id);
+    state.items = keep; persist();
+  }
   // Older vaults and imports: mark 2FA setup-key fields so they show as live codes.
   for (const it of state.items) { const f = window.otp.otpField(it); if (f && !f.kind) { f.kind = 'otp'; f.label = 'Verification code'; } }
   // The lock card lifts away while the window arrives.
@@ -459,6 +466,7 @@ function unlocked(items) {
   requestLogos();
   loadSitePasskeys().then(() => { if (!$('#app').hidden) renderList(); });
   loadVaultExtras();
+  loadMail();
   $('#q').focus();
   bumpIdle();
 }
@@ -530,13 +538,20 @@ function renderViews() {
     security: hm.size,
     deleted: state.items.length - items.length,
     passkeys: state.sitePasskeys.length,
+    mail: typeof mail !== 'undefined' ? mail.messages.length : 0,
   };
   const views = $('#views');
   for (const t of [...views.querySelectorAll('.view-tab')]) t.remove(); // the pill stays, so it can glide
-  views.append(...VIEWS.map((v) => h('button', {
+  const vs = shownViews();
+  if (!vs.some((v) => v.id === state.view)) state.view = 'all';
+  views.style.gridTemplateColumns = `repeat(${vs.length}, max-content)`;
+  views.classList.toggle('seven', vs.length > 6);
+  const unreadMail = typeof mail !== 'undefined' ? mail.messages.filter((m) => !m.seen).length : 0;
+  views.append(...vs.map((v) => h('button', {
     class: 'view-tab', role: 'tab', id: 'view-' + v.id, 'aria-selected': String(state.view === v.id),
     title: `${v.label} (${counts[v.id]})`, onclick: () => setView(v.id),
-  }, h('span', { class: 'view-icon' }, icon(v.icon), v.id === 'security' && counts.security ? h('b', { class: 'badge' }, counts.security > 99 ? '99+' : String(counts.security)) : null),
+  }, h('span', { class: 'view-icon' }, icon(v.icon), v.id === 'security' && counts.security ? h('b', { class: 'badge' }, counts.security > 99 ? '99+' : String(counts.security)) : null,
+    v.id === 'mail' && unreadMail ? h('b', { class: 'badge accent' }, unreadMail > 99 ? '99+' : String(unreadMail)) : null),
   h('span', { class: 'view-label' }, v.label))));
   placePill(views, '.view-pill', document.getElementById('view-' + state.view), 'x');
   return counts;
@@ -564,6 +579,7 @@ async function setView(id) {
   if (state.mode !== 'view' && !(await cancelEdit())) return;
   state.view = id;
   state.tool = null;
+  if (typeof mail !== 'undefined') { mail.openId = null; mail.current = null; }
   state.showHistory = false;
   state.selectedId = null;
   state.animateRows = true;
@@ -589,6 +605,7 @@ function renderList() {
   const list = $('#list');
   const counts = renderViews();
   renderListTool();
+  if (state.view === 'mail') { $('#qClear').hidden = !state.query; return renderMailList(list); }
   const res = matches();
   const q = state.query.trim();
   const v = VIEWS.find((x) => x.id === state.view);
@@ -659,6 +676,8 @@ function renderDetail() {
   setTint(state.mode !== 'view' ? state.draft : it);
   if (state.mode === 'edit' || state.mode === 'new') return d.replaceChildren(...editView());
   if (state.tool === 'email') { lastShownId = null; return d.replaceChildren(...emailToolView()); }
+  if (state.tool === 'message') { lastShownId = null; setTint(null); return d.replaceChildren(...messageView()); }
+  if (state.view === 'mail') { lastShownId = null; setTint(null); return d.replaceChildren(...mailBlankView()); }
   if (state.tool === 'queue-done' && state.ui.changeQueue) { lastShownId = null; return d.replaceChildren(...queueDoneView()); }
   if (!it) return d.replaceChildren(h('div', { class: 'detail-bar drag' }), blankView());
   if (it.passkey) { lastShownId = it.id; return d.replaceChildren(...passkeyDetail(it)); }
@@ -684,13 +703,13 @@ function blankView() {
     h('div', { class: 'kbd' }, h('kbd', {}, 'Ctrl'), ' ', h('kbd', {}, 'N'), ' new account  ·  ', h('kbd', {}, 'Ctrl'), ' ', h('kbd', {}, 'I'), ' import')));
 }
 
-function valueRow({ label, value, secret, id, link, copyName }) {
+function valueRow({ label, value, secret, id, link, copyName, badge }) {
   const shown = !secret || state.reveal.has(id);
   const empty = !value;
   let valueEl;
   if (empty) valueEl = h('div', { class: 'f-value muted' }, 'None');
   else if (link) valueEl = h('a', { class: 'f-value link', href: '#', onclick: (e) => { e.preventDefault(); e.stopPropagation(); openLink(link); } }, value);
-  else valueEl = h('div', { class: 'f-value' + (secret ? (shown ? ' secret' : ' dots') : ''), title: secret && !shown ? 'Click to copy' : null }, shown ? value : '•'.repeat(Math.min(14, Math.max(8, value.length))));
+  else valueEl = h('div', { class: 'f-value' + (secret ? (shown ? ' secret' : ' dots') : '') + (badge ? ' with-badge' : ''), title: secret && !shown ? 'Click to copy' : null }, shown ? value : '•'.repeat(Math.min(14, Math.max(8, value.length))), badge || null);
 
   const actions = h('div', { class: 'row-actions' },
     secret && !empty ? h('button', {
@@ -718,7 +737,7 @@ function detailView(it) {
         'aria-pressed': String(!!it.favorite), 'aria-label': it.favorite ? 'Remove from Favorites' : 'Add to Favorites',
         title: (it.favorite ? 'Remove from Favorites' : 'Add to Favorites') + ' (Ctrl+D)',
       }, icon(it.favorite ? 'i-star-fill' : 'i-star')),
-      window.siteOfItem(it) ? h('button', { class: 'glass-btn glass', id: 'changePwBtn', onclick: () => changePassword(it), title: 'Make a new password and open the site’s change-password page' }, it.pending ? 'Continue Change' : 'Change Password') : null,
+      window.siteOfItem(it) ? h('button', { class: queueCurrent() === it.id ? 'btn-primary' : 'glass-btn glass', id: 'changePwBtn', onclick: () => changePassword(it), title: 'Make a new password and open the site’s change-password page' }, it.pending ? 'Continue Change' : 'Change Password') : null,
       h('button', { class: 'glass-btn glass', onclick: () => startEdit(it), title: 'Edit (Ctrl+E)' }, 'Edit'));
 
   const hero = h('div', { class: 'hero' }, tile(it, true),
@@ -761,7 +780,7 @@ function detailView(it) {
   h('div', { class: 'row-actions' }, h('button', { class: 'mini-btn', 'data-copy': '', title: 'Copy', 'aria-label': 'Copy verification code', onclick: async (e) => { e.stopPropagation(); const b = e.currentTarget; copy(await otpCode(cfg), true, 'Code', b, b.closest('.field-row')); } }, icon('i-copy')))) : null;
 
   const main = h('div', { class: 'group' },
-    valueRow({ label: 'User name', value: it.username, id: 'u', copyName: 'User name' }),
+    valueRow({ label: 'User name', value: it.username, id: 'u', copyName: 'User name', badge: it.mailAddr ? mailBadge(mailAddrOf(it.mailAddr.id)) : null }),
     valueRow({ label: pend ? 'Current password' : 'Password', value: it.password, secret: true, id: 'pw', copyName: pend ? 'Current password' : 'Password' }),
     pend ? valueRow({ label: 'New password', value: pend.value, secret: true, id: 'pwnew', copyName: 'New password' }) : null,
     codeRow,
@@ -798,7 +817,7 @@ function detailView(it) {
   const swap = lastShownId !== it.id;
   lastShownId = it.id;
   setTimeout(tickCodes, 0);
-  return [bar, h('div', { class: 'detail-scroll' }, h('div', { class: 'detail-inner' + (swap ? ' swap' : '') }, queueBar(it), hero, notice, changing, security, main, ...extras, ...history, ...nameHistory, ...notes, meta))];
+  return [bar, h('div', { class: 'detail-scroll' }, h('div', { class: 'detail-inner' + (swap ? ' swap' : '') }, queueBar(it), hero, notice, changing, security, main, ...addressSection(it), ...extras, ...history, ...nameHistory, ...notes, meta))];
 }
 
 // History keeps the last 10 passwords and, separately, the last 10 user names ({ kind: 'username' }).
@@ -838,6 +857,7 @@ function isDirty() {
 }
 async function cancelEdit() {
   if (isDirty() && !(await confirmAlert('Discard changes?', 'Your edits to this account will be lost.', 'Discard', true))) return false;
+  dropUnsavedAddress(state.draft);
   state.mode = 'view'; state.draft = null;
   render();
   return true;
@@ -866,6 +886,7 @@ async function saveEdit() {
   const before = state.items;
   state.items = (state.mode === 'new' ? [...before, d] : before.map((x) => (x.id === d.id ? d : x))).sort(byTitle);
   if (!(await persist())) { state.items = before; return; }
+  afterAddressSaved(old, d);
   state.selectedId = d.id; state.mode = 'view'; state.draft = null; state.reveal.clear();
   render();
   toast('Saved');
@@ -890,7 +911,11 @@ function editView() {
   });
   const main = h('div', { class: 'group' },
     h('div', { class: 'field-row' }, h('label', { class: 'f-label', for: 'f-user' }, 'User name'),
-      h('input', { id: 'f-user', class: 'in', value: d.username, placeholder: 'Email or user name', oninput: set('username'), spellcheck: 'false', autocomplete: 'off' }), h('span')),
+      h('div', { class: 'user-edit' },
+        h('input', { id: 'f-user', class: 'in', value: d.username, placeholder: 'Email or user name', oninput: set('username'), spellcheck: 'false', autocomplete: 'off' }),
+        d.mailAddr ? mailBadge(mailAddrOf(d.mailAddr.id) || d.mailAddr) : null),
+      h('div', { class: 'edit-tools' },
+        h('button', { class: 'mini-btn', id: 'genEmail', title: 'Generate email address', 'aria-label': 'Generate email address', 'aria-haspopup': 'menu', onclick: (e) => generateEmail(d, e.currentTarget) }, icon('i-mail')))),
     h('div', { class: 'field-row' }, h('label', { class: 'f-label', for: 'f-pw' }, 'Password'), pwInput,
       h('div', { class: 'edit-tools' },
         h('button', { class: 'mini-btn', title: d._showPw ? 'Hide' : 'Show', 'aria-label': d._showPw ? 'Hide password' : 'Show password', onclick: () => { d._showPw = !d._showPw; pwInput.type = d._showPw ? 'text' : 'password'; } }, icon('i-eye')),
@@ -1026,14 +1051,15 @@ function recoverItem(it) {
 }
 
 async function purgeItem(it) {
-  const ok = await confirmAlert(`Delete “${it.title}” now?`, 'It’s removed from your vault for good. You can’t undo this.', 'Delete', true);
+  const ok = await confirmAlert(`Delete “${it.title}” now?`, 'It’s removed from your vault for good. You can’t undo this.' + (it.mailAddr ? ' Its generated email address is deleted too.' : ''), 'Delete', true);
   if (!ok) return;
   const before = state.items;
   const idx = matches().findIndex((r) => r.it.id === it.id);
   state.items = before.filter((x) => x.id !== it.id);
   if (!(await persist())) { state.items = before; return; }
+  if (it.mailAddr) mailApi('remove', it.mailAddr.id).then(loadMail);
   const res = matches();
-  state.selectedId = res.length ? res[Math.min(idx, res.length - 1)].it.id : null;
+  state.selectedId = res.length ? res[Math.max(0, Math.min(idx, res.length - 1))].it.id : null;
   render();
   toast('Deleted for good');
 }
@@ -1216,6 +1242,7 @@ async function moreMenu(e) {
     { label: 'Change Master Password…', value: 'change-password' },
     { label: 'Unlock With Passkey…', value: 'passkeys' },
     { label: 'Change Email Everywhere…', value: 'email-change' },
+    { label: 'Email Addresses…', value: 'mail-setup' },
     'sep',
     { label: 'Quick Search', value: 'quick', key: 'Ctrl+Shift+Space' },
     p.openAtLogin != null ? { label: 'Open Vault When Windows Starts', value: 'login-item', checked: p.openAtLogin } : null,
@@ -1243,6 +1270,7 @@ function handleCommand(cmd) {
   if (cmd === 'change-password') changePwFlow();
   if (cmd === 'passkeys') passkeysFlow();
   if (cmd === 'email-change') openEmailTool();
+  if (cmd === 'mail-setup') mailSetupFlow();
   if (cmd === 'check-updates') manualUpdateCheck();
   if (cmd === 'generator') generatorFlow(false);
   if (cmd === 'browser') browserFlow();
@@ -1572,6 +1600,13 @@ async function deletePasskey(it) {
 
 // ---------- keyboard ----------
 function moveSelection(delta) {
+  if (state.view === 'mail') { // the Mail view lists messages, not accounts
+    const rows = mailListRows();
+    if (!rows.length) return;
+    const i = rows.findIndex((m) => m.id === mail.openId);
+    openMessage(rows[Math.max(0, Math.min(rows.length - 1, (i < 0 ? -1 : i) + delta))].id);
+    return;
+  }
   const res = matches();
   if (!res.length) return;
   let i = res.findIndex((r) => r.it.id === state.selectedId);
@@ -1592,7 +1627,7 @@ document.addEventListener('keydown', (e) => {
     if (state.query) { $('#q').value = ''; state.query = ''; renderList(); renderDetail(); $('#q').focus(); return; }
   }
   if (editing) return;
-  if (ctrl && !e.shiftKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); setView(VIEWS[+e.key - 1].id); return; }
+  if (ctrl && !e.shiftKey && /^[1-7]$/.test(e.key)) { e.preventDefault(); const v = shownViews()[+e.key - 1]; if (v) setView(v.id); return; }
   if (it && it.passkey && ctrl && /^[deuc]$/i.test(e.key)) { e.preventDefault(); return; } // nothing to edit, star or copy
   if (ctrl && e.key.toLowerCase() === 'd' && it) { e.preventDefault(); toggleFavorite(it); return; }
   if (ctrl && e.key.toLowerCase() === 'e' && it && !it.deletedAt) { e.preventDefault(); startEdit(it); return; }

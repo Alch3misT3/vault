@@ -20,6 +20,14 @@ const SRC = path.join(__dirname, 'src');
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; " +
   "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'";
 const CSP_DECODER = "default-src 'none'; script-src 'self'; img-src blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+// The main window may show one kind of frame: an HTML mail, served by Vault at /mail-frame/<random id>.
+const MAIL_FRAME = ORIGIN + '/mail-frame/';
+const CSP_INDEX = CSP.replace("frame-src 'none'", 'frame-src ' + MAIL_FRAME);
+// A mail frame: no scripts (sandbox), no forms, nothing from outside; only its own styles and pictures sent inside the mail.
+const CSP_MAIL = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors " + ORIGIN + '; sandbox';
+let mailFrames = null; // (id) => html | null, set by the main process
+let onMailLink = null; // (url) => void: a link was clicked inside a mail frame
+function setMailFrames(get, onLink) { mailFrames = get; onMailLink = onLink; }
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -38,6 +46,11 @@ function serveApp(ses) {
     try { u = new URL(req.url); } catch { return new Response(null, { status: 400 }); }
     if (u.host !== HOST || req.method !== 'GET') return new Response(null, { status: 403 });
     const rel = decodeURIComponent(u.pathname).replace(/^\/+/, '');
+    if (rel.startsWith('mail-frame/')) {
+      const html = mailFrames && /^mail-frame\/[a-f0-9]{32}$/.test(rel) ? mailFrames(rel.slice(11)) : null;
+      if (html == null) return new Response(null, { status: 404 });
+      return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': CSP_MAIL, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } });
+    }
     const file = path.resolve(SRC, rel);
     if (!rel || !file.startsWith(SRC + path.sep) || !TYPES[path.extname(file)]) return new Response(null, { status: 404 });
     let body;
@@ -49,7 +62,7 @@ function serveApp(ses) {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Referrer-Policy': 'no-referrer',
     };
-    if (file.endsWith('.html')) headers['Content-Security-Policy'] = rel === 'logo-decoder.html' ? CSP_DECODER : CSP;
+    if (file.endsWith('.html')) headers['Content-Security-Policy'] = rel === 'logo-decoder.html' ? CSP_DECODER : rel === 'index.html' ? CSP_INDEX : CSP;
     return new Response(body, { headers });
   });
   // Belt and braces: the pages may only load Vault's own files.
@@ -86,7 +99,17 @@ function hardenApp({ dev }) {
   app.enableSandbox();
   app.on('web-contents-created', (_e, wc) => {
     wc.on('will-navigate', (e) => e.preventDefault());
-    wc.on('will-frame-navigate', (e) => { if (!e.isMainFrame) e.preventDefault(); });
+    wc.on('will-frame-navigate', (e) => {
+      if (e.isMainFrame) return;
+      // Inside Vault's main window, a frame may load a mail Vault serves itself; nothing else.
+      const frame = e.frame;
+      const parent = frame && frame.parent;
+      const inMain = !!parent && !parent.parent && String(parent.url || '').startsWith(ORIGIN + '/index.html');
+      if (inMain && String(e.url).startsWith(MAIL_FRAME)) return;
+      e.preventDefault();
+      // A link clicked in a mail: the window shows where it goes before anything opens.
+      if (inMain && frame && String(frame.url || '').startsWith(MAIL_FRAME) && onMailLink) onMailLink(String(e.url));
+    });
     wc.on('will-redirect', (e) => e.preventDefault());
     wc.on('will-attach-webview', (e) => e.preventDefault());
     wc.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -136,4 +159,4 @@ function makeGuard(pages) {
   };
 }
 
-module.exports = { HOST, ORIGIN, CSP, pageUrl, serveApp, appSession, hardenApp, webPrefs, makeGuard, lockDownSession };
+module.exports = { HOST, ORIGIN, CSP, CSP_INDEX, CSP_MAIL, MAIL_FRAME, setMailFrames, pageUrl, serveApp, appSession, hardenApp, webPrefs, makeGuard, lockDownSession };

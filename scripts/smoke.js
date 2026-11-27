@@ -47,6 +47,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     return ok;
   };
   const MASTER = 'correct horse battery';
+  const ONLY_DONE = { only: true };
   const extraSecrets = []; // passwords made during the run, also searched for on disk at the end
 
   if (process.env.VAULT_DEBUG_EVENTS) for (const ev of ['render-process-gone', 'did-finish-load', 'did-fail-load', 'did-start-loading', 'dom-ready']) win.webContents.on(ev, (_e, d) => console.log('EVENT', ev, Date.now() % 100000, d && d.reason || ''));
@@ -99,6 +100,11 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     t = await doImport('bad.csv');
     check('bad CSV shows a clear error, imports nothing', (await count()) === 10 && /Can’t import/.test(t), t);
 
+    // Quick run of only the mail tests: VAULT_SMOKE_ONLY=mail
+    if (process.env.VAULT_SMOKE_ONLY === 'mail') {
+      extraSecrets.push(...(await require('./smoke-mail')({ app, win, js, wait, waitFor, shot, check, test, relock, MASTER, opened, clipboard })).secrets);
+      throw ONLY_DONE;
+    }
     const riot = await js("JSON.stringify(window.__vaultState.items.find(i => i.title === 'Riot Games'))");
     const r = JSON.parse(riot || '{}');
     check('Bitwarden fields kept (PIN secret, notes multiline)', r.fields && r.fields.some((f) => f.label === 'PIN' && f.value === '4821' && f.secret) && /EUW/.test(r.notes), JSON.stringify(r.fields));
@@ -450,6 +456,13 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
       for (const p of relays) try { p.kill(); } catch {}
     }
 
+    // Generated email addresses (one-time inbox, alias services + IMAP, own domain + Worker) and their mail
+    extraSecrets.push(...(await require('./smoke-mail')({ app, win, js, wait, waitFor, shot, check, test, relock, MASTER, opened, clipboard })).secrets);
+    // The Cloudflare Worker itself, run locally with Cloudflare's tooling (wrangler dev)
+    await require('./smoke-worker')({ check, wait });
+    // Against the real services, only when asked: VAULT_REAL_MAIL=1 (see scripts/real-mail.js)
+    if (process.env.VAULT_REAL_MAIL) await require('./real-mail')({ check });
+
     // 18. Security: windows, IPC, navigation, CSP, permissions, fuses, crypto, lock, clipboard
     await require('./smoke-security')({ app, win, js, wait, waitFor, check, clipboard, vaultPath, relock, test, MASTER, getQuick });
 
@@ -489,7 +502,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await relock();
     await shot('14-locked');
   } catch (err) {
-    check('smoke run crashed', false, err && err.stack);
+    if (err !== ONLY_DONE) check('smoke run crashed', false, err && err.stack);
   }
   try { require('./smoke-security').scanDisk({ app, check, secrets: [MASTER, 'gh-Pa55-word', 'another horse battery', 'brand new master pw', 'my old vault pw', 'old-Pa55', ...extraSecrets] }); } catch (err) { check('disk scan crashed', false, err.stack); }
   const failed = results.filter((x) => !x).length;

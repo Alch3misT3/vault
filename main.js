@@ -3,7 +3,7 @@
 // Holds the encryption key, reads/writes the encrypted vault file and is the
 // only place that touches the clipboard or opens links in the default browser.
 
-const { app, BrowserWindow, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen, safeStorage, systemPreferences } = require('electron');
+const { app, BrowserWindow, webFrameMain, ipcMain, Menu, clipboard, shell, nativeTheme, powerMonitor, dialog, globalShortcut, Tray, nativeImage, screen, safeStorage, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -100,6 +100,7 @@ function startSession(key, payload, more) {
   failedAttempts = 0;
   mainDirty = true; activity();
   setImmediate(() => updatePrompt()); // a passkey request waiting for the unlock can go on
+  setImmediate(() => { if (session && MAIL) MAIL.onUnlock(); });
   return items || [];
 }
 
@@ -136,6 +137,8 @@ async function migrateV1(original, password, payload) {
 
 function lock() {
   if (logos) logos.lock();
+  if (MAIL) MAIL.onLock();
+  mailFrames.clear();
   if (session) session.key.fill(0);
   session = null;
 }
@@ -246,6 +249,47 @@ async function checkBreaches() {
   return breachRun;
 }
 
+// ---------- Generated email addresses and their mail (mail/) ---------------------
+let MAIL = null;
+const mailFrames = new Map(); // id -> cleaned HTML of a mail being shown (only while unlocked)
+function setupMail() {
+  MAIL = require('./mail')({
+    app, getKey: () => (session ? session.key : null), getExtra: () => (session && !session.v1 ? session.extra : null), saveExtra, send,
+    log: (m) => logUpdate('[mail] ' + m), // fixed messages and error codes only
+  });
+  security.setMailFrames((id) => (session && mailFrames.has(id) ? mailFrames.get(id) : null), (url) => send('mail:link', url));
+  const op = (name, fn) => handle('mail:' + name, async (_e, ...args) => {
+    if (!session) return { error: 'locked' };
+    activity();
+    try { return await fn(...args); } catch (err) { logUpdate('[mail] ' + name + ' failed: ' + ((err && err.code) || (err && err.name))); return { error: (err && err.code) || 'failed' }; }
+  });
+  op('state', () => MAIL.publicState());
+  op('set-temp', (on) => MAIL.setTemp(on === true));
+  op('alias-key', (service, key) => MAIL.setAliasKey(String(service), key == null ? null : String(key)));
+  op('mailbox', (box) => MAIL.setMailbox(box && typeof box === 'object' ? box : null));
+  op('cf-zones', (token) => MAIL.cfZones(String(token || '')));
+  op('cf-deploy', (o) => MAIL.cfDeploy(o && typeof o === 'object' ? o : {}).then((st) => { MAIL.restart(); return st; }));
+  op('cf-test', () => MAIL.cfTest());
+  op('cf-remove', () => MAIL.cfRemove());
+  op('create', async (o) => { const a = await MAIL.create(o && typeof o === 'object' ? o : {}); MAIL.restart(); return { address: a, state: MAIL.publicState() }; });
+  op('remove', (id) => MAIL.remove(String(id)).then(() => MAIL.publicState()));
+  op('set-state', (id, on) => MAIL.setState(String(id), on === true).then(() => MAIL.publicState()));
+  op('link', (id, entryId) => MAIL.link(String(id), entryId == null ? null : String(entryId)));
+  op('check', () => MAIL.check('all'));
+  op('list', () => MAIL.messages());
+  op('get', (id) => MAIL.message(String(id)));
+  op('seen', (id) => MAIL.markSeen(String(id)));
+  op('delete', (id) => MAIL.deleteMessage(String(id)));
+  // The window cleaned the mail's HTML; Vault serves it at a random address the mail frame loads.
+  op('frame', (html) => {
+    if (typeof html !== 'string' || html.length > 4 * 1024 * 1024) return null;
+    const id = crypto.randomBytes(16).toString('hex');
+    mailFrames.set(id, html);
+    while (mailFrames.size > 4) mailFrames.delete(mailFrames.keys().next().value);
+    return security.MAIL_FRAME + id;
+  });
+}
+
 // ---------- Window -----------------------------------------------------------
 let win = null;
 
@@ -296,6 +340,15 @@ function createWindow() {
 
   // Nothing inside the app may navigate away or spawn windows (security.js); links go to the browser.
   win.webContents.setWindowOpenHandler(({ url }) => { openUrl(url); return { action: 'deny' }; });
+  // A link clicked inside a mail: the page's policy stops the frame from going there; the window
+  // then shows the real address and asks before opening it in the browser.
+  // (The only frames this page may have are mail frames, so a frame stopped by that policy is one.)
+  win.webContents.on('did-fail-provisional-load', (_e, code, _desc, url, isMainFrame, pid, rid) => {
+    if (isMainFrame || code !== -30 || !/^https?:/i.test(String(url))) return; // -30: ERR_BLOCKED_BY_CSP
+    const f = webFrameMain.fromId(pid, rid);
+    const top = win.webContents.mainFrame;
+    if (f && f.parent && f.parent.frameTreeNodeId === top.frameTreeNodeId && String(top.url).startsWith(security.ORIGIN + '/index.html')) send('mail:link', String(url));
+  });
 }
 
 nativeTheme.on('updated', () => {
@@ -468,7 +521,7 @@ async function unlock(password) {
   const K = await migrateV1(file, password, payload);
   if (!K) return { ok: true, items: startSession(key, payload, { v1: true, salt: Buffer.from(file.kdf.salt, 'base64'), kdf: VF.kdfOf(file) }) };
   const items = startSession(K, payload);
-  try { if (logos) logos.rekey(key); } finally { key.fill(0); } // the logo cache was sealed with the old key
+  try { if (logos) logos.rekey(key); if (MAIL) MAIL.rekey(key); } finally { key.fill(0); } // caches sealed with the old key
   return { ok: true, items, migrated: true };
 }
 
@@ -511,7 +564,7 @@ handle('vault:change-password', async (_e, current, next, items) => {
   try { fs.rmSync(v1BackupPath(), { force: true }); } catch {}
   const oldKey = session.key;
   session = { key: K, extra: session.extra };
-  try { if (logos) logos.rekey(oldKey); } finally { oldKey.fill(0); }
+  try { if (logos) logos.rekey(oldKey); if (MAIL) MAIL.rekey(oldKey); } finally { oldKey.fill(0); }
   return { ok: true, passkeysRemoved: removed };
 });
 
@@ -630,6 +683,7 @@ handle('file:restore', async () => {
     const f = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (f.app !== 'vault' || !f.kdf || !f.data || (f.version === 2 && !(f.keys && f.keys.password))) return { ok: false, error: 'That file is not a Vault backup.' };
     if (logos) logos.reset();
+    if (MAIL) MAIL.reset();
     writeFileAtomic(f);
     lockVault({ notify: false });
     return { ok: true };
@@ -1083,6 +1137,7 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
       app, BrowserWindow, handle, getKey: () => (session ? session.key : null), prefs, setPref, send,
       log: (m) => logUpdate('[logos] ' + m), smoke: SMOKE, links: require('./src/links.js'),
     });
+    setupMail();
     createWindow();
     setupUpdates();
     setupBridge();
@@ -1100,7 +1155,7 @@ if (!SMOKE && !MAKE_ICON && !app.requestSingleInstanceLock()) {
     else if (SMOKE_CHILD) require('./scripts/smoke-child')({ win, PW, opened });
     else if (SMOKE && process.env.VAULT_REAL_LOGOS) require('./scripts/real-logos')({ testWorkArea, win, nativeTheme, getLogos: () => logos });
     else if (SMOKE) require('./scripts/smoke')({ app, win, nativeTheme, vaultPath, opened, clipboard, smokeIO, showQuick, getQuick: () => quick, getBridge: () => bridge, getLogos: () => logos,
-      test: { testWorkArea, PW, getExtra: () => session && session.extra, guard, idle, getSession: () => session, lockVault, clearClipboard, copy, logUpdate, getQuickWin: () => quick, getPrompt: () => prompt, sitePasskeys } });
+      test: { testWorkArea, PW, getMail: () => MAIL, mailFrames, getExtra: () => session && session.extra, guard, idle, getSession: () => session, lockVault, clearClipboard, copy, logUpdate, getQuickWin: () => quick, getPrompt: () => prompt, sitePasskeys } });
   });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { lock(); app.quit(); });

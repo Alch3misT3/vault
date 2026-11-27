@@ -16,7 +16,8 @@
   },
   "devDependencies": {
     "electron": "^45.4.1",
-    "electron-builder": "^26.18.0"
+    "electron-builder": "^26.18.0",
+    "wrangler": "4.168.0"
   },
   "build": {
     "appId": "local.vault.app",
@@ -33,6 +34,7 @@
       "passkeys.js",
       "nativehost.js",
       "pwchange.js",
+      "mail/**/*",
       "psl.txt",
       "preload-prompt.js",
       "preload.js",
@@ -87,7 +89,8 @@
     }
   },
   "dependencies": {
-    "electron-updater": "^6.8.11"
+    "electron-updater": "^6.8.11",
+    "postal-mime": "4.2.1"
   },
   "repository": {
     "type": "git",

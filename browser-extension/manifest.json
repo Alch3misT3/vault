@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Vault",
   "short_name": "Vault",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Fill logins and use passkeys from Vault, the private password manager on your PC.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqoDg4Ezxq+L55PSgP5gYUFkvOlvxO5vl0RExKEVSnpHFTh36GicpQQ2Z0+BV/vGA0SOsvC7l/E1LMcBNMz3JFlkewiX8rNE9Kjp9WcESgUV0UDRfHBkrdvf8tGqU5Wv0d7iX2RLDm8IxDdIFBytQnCVyMkUNaDg/3fDhI8ls60TjP7t4kRZj/NIXoSGpJuGhFZAX2nAh34L9HqKD7u92Af65js8eKFqSyu7qEL4iKTLGyDxPKen6h+/cUbmpRUmEbQ7bZLJoG71Kig7HUVHBaRtAR+NEPHsHttCxGg5zQGM0X580Ynv8/dLCwPs0g/d8p/teRv4dfzWognOZqsYznQIDAQAB",
   "icons": {

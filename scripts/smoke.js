@@ -61,6 +61,20 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await waitFor("!document.getElementById('lock').hidden");
 
     // 1. First run
+    check('new here: the welcome tour comes first', await js("!document.getElementById('welcome').hidden && document.getElementById('lockForm').hidden && document.querySelectorAll('.welcome-page').length === 3"));
+    await wait(700);
+    await shot('00a-welcome');
+    await js("document.getElementById('welcomeNext').click()");
+    await wait(600);
+    check('tour page 2 lists features', await js("document.querySelectorAll('.welcome-page.current .feature').length === 4"));
+    await shot('00b-welcome-features');
+    await js("document.getElementById('welcomeNext').click()");
+    await wait(600);
+    check('the last page offers Create Your Vault', await js("document.getElementById('welcomeNext').textContent === 'Create Your Vault'"));
+    await shot('00c-welcome-safety');
+    await js("document.getElementById('welcomeNext').click()");
+    check('the tour hands over to the create card', await waitFor("document.getElementById('welcome').hidden && !document.getElementById('lockForm').hidden", 2000));
+    await wait(700);
     check('first run shows create screen', await js("document.getElementById('lockTitle').textContent === 'Create your vault'"));
     await js(`(() => { const a = document.getElementById('pw1'); a.value = 'short'; a.dispatchEvent(new Event('input')); })()`);
     check('create blocked for short password', await js("document.getElementById('createGo').disabled"));
@@ -112,6 +126,25 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     check('LastPass quoted password parsed', pp === 'pay,pal"pass', pp);
     const gh = await js("JSON.stringify(window.__vaultState.items.find(i => i.title === 'GitHub').fields)");
     check('Apple OTPAuth kept as secret field', /otpauth/.test(gh));
+
+    // Stacks: accounts for the same site share one row
+    await js(`(() => { const s = window.__vaultState; s.savedItems = s.items; const mk = (u, t) => ({ id: 'stk-' + t, title: 'Amazon', website: 'https://www.amazon.com', username: u, password: 'Zq9!stack' + t, fields: [], notes: '', createdAt: t * 1e12, updatedAt: t * 1e12 });
+      s.items = [...s.items, mk('anna@example.com', 1), mk('bob@example.com', 1.1), mk('anna@example.com', 1.2)]; s.query = ''; s.openGroups.clear(); s.selectedId = s.items[0].id; render(); })()`);
+    check('same-site accounts share one stack row', await js("(() => { const g = [...document.querySelectorAll('#list .row.stack-row')].filter(r => /Amazon/.test(r.textContent)); return g.length === 1 && /3 accounts/.test(g[0].textContent) && ![...document.querySelectorAll('#list .row:not(.stack-row)')].some(r => /Amazon/.test(r.querySelector('.row-title').textContent)); })()"));
+    await js("document.querySelector('#list .row.stack-row[data-key=amazon]').click()");
+    await wait(500);
+    check('opening a stack shows its accounts and selects the first', await js("document.querySelectorAll('#list .row.child').length === 3 && window.__vaultState.selectedId === 'stk-1.2' && document.querySelector('#list .row.stack-row').getAttribute('aria-expanded') === 'true'"));
+    check('same user name twice: the edit date tells them apart', await js("[...document.querySelectorAll('#list .row.child')].filter(r => /Edited/.test(r.textContent)).length === 2"));
+    const grpBg = await js("(() => { const g = document.querySelector('#list .row.stack-row'); return g.matches(':hover') + ' ' + getComputedStyle(g).backgroundColor; })()");
+    check('an open stack row has no fill of its own', /^true|rgba\(0, 0, 0, 0\)/.test(grpBg), grpBg);
+    await shot('30-stacks');
+    await js("moveSelection(1)");
+    check('arrow keys walk through a stack (same user name together, newest first)', await js("window.__vaultState.selectedId === 'stk-1'"));
+    await js("document.querySelector('#list .row.stack-row[data-key=amazon]').click()");
+    check('a closed stack stands in for its selected account', await js("document.querySelectorAll('#list .row.child').length === 0 && document.querySelector('#list .row.stack-row[data-key=amazon]').getAttribute('aria-selected') === 'true'"));
+    await wait(500);
+    await shot('30b-stacks-closed');
+    await js("(() => { const s = window.__vaultState; s.items = s.savedItems; delete s.savedItems; s.openGroups.clear(); s.selectedId = null; render(); })()");
 
     // 3. Detail + search
     await js("select(window.__vaultState.items.find(i => i.title === 'Riot Games').id)");
@@ -270,7 +303,7 @@ module.exports = async function smoke({ app, win, nativeTheme, vaultPath, opened
     await js("setView('security')");
     const sec = await js("[...document.querySelectorAll('#list .row')].map(r => r.textContent).join(' | ')");
     check('Security finds the weak and the reused passwords', /Discord.*Weak password/.test(sec) && /Google.*Reused on 2/.test(sec) && /Netflix.*Reused on 2/.test(sec), sec);
-    check('Security badge counts the accounts', await js("+document.querySelector('#view-security .badge').textContent >= 3"));
+    check('Security tab: a dot, and the count in its label', await js("!!document.querySelector('#view-security .dot') && +(document.getElementById('view-security').title.match(/(\\d+) issue/) || [])[1] >= 3"));
     check('strong generated passwords are not flagged', !/Twitch/.test(sec), sec);
     await js(`select(${byName('Google')}.id)`);
     await shot('18-security');

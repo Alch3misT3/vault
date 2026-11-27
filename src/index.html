@@ -9,6 +9,7 @@
 <body>
   <svg class="sprite" aria-hidden="true">
     <defs>
+      <symbol id="i-globe" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2.8 10h14.4M10 2.8c2 2 3 4.4 3 7.2s-1 5.2-3 7.2c-2-2-3-4.4-3-7.2s1-5.2 3-7.2Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
       <symbol id="i-search" viewBox="0 0 20 20"><circle cx="8.6" cy="8.6" r="5.6" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m12.8 12.8 4.4 4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
       <symbol id="i-clear" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8" fill="currentColor"/><path d="m7.2 7.2 5.6 5.6m0-5.6-5.6 5.6" stroke="var(--clear-x)" stroke-width="1.6" stroke-linecap="round"/></symbol>
       <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
@@ -43,6 +44,15 @@
 
   <!-- Unlock / first run -->
   <section id="lock" class="lock" hidden>
+    <!-- First run only (no vault file yet): a short tour before the vault is created -->
+    <div id="welcome" class="welcome glass" role="group" aria-roledescription="tour" aria-label="Welcome to Vault" hidden>
+      <div id="welcomePages" class="welcome-pages"></div>
+      <div class="welcome-foot">
+        <button id="welcomeBack" class="btn-plain" type="button">Back</button>
+        <div id="welcomeDots" class="welcome-dots" role="tablist" aria-label="Pages"></div>
+        <button id="welcomeNext" class="btn-primary" type="button">Continue</button>
+      </div>
+    </div>
     <form id="lockForm" class="lock-card glass" autocomplete="off" novalidate>
       <div class="app-icon" aria-hidden="true"><svg><use href="#i-vault"/></svg></div>
       <h1 id="lockTitle">Vault is locked</h1>
@@ -243,6 +253,7 @@
   <script src="words.js"></script>
   <script src="links.js"></script>
   <script src="transfer.js"></script>
+  <script src="welcome.js"></script>
   <script src="app.js"></script>
   <script src="changes.js"></script>
   <script src="mailcode.js"></script>

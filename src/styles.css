@@ -543,36 +543,41 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .update-bar .btn-primary { height: 28px; padding: 0 13px; font-size: 12.5px; }
 
 /* ---------- Views: All / Favorites / Codes / Security / Deleted / Passkeys ---------- */
-/* Six tabs, each as wide as its label needs, spread across the bar. */
+/* Icons only; the selected tab opens up to show its name, and the pill glides and stretches to it. */
 .views {
-  position: relative; display: grid; grid-template-columns: repeat(6, max-content); justify-content: space-between; gap: 0; flex: none;
-  margin: -2px 12px 10px; padding: 3px; border-radius: 16px; background: var(--field);
+  position: relative; display: flex; justify-content: space-between; align-items: center; flex: none;
+  margin: -2px 12px 8px; padding: 3px; border-radius: 14px; background: var(--field);
 }
 .view-tab {
-  display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0;
-  padding: 6px 4px 4px; border-radius: 13px; color: var(--secondary);
-  position: relative; z-index: 1;
-  transition: color .25s, transform var(--t-settle) var(--spring-bounce);
+  display: flex; align-items: center; gap: 0; height: 30px; min-width: 32px; padding: 0 7.5px; border-radius: 11px;
+  color: var(--secondary); position: relative; z-index: 1;
+  transition: color .25s, gap var(--t-move) var(--spring), padding var(--t-move) var(--spring), transform var(--t-settle) var(--spring-bounce);
 }
 .view-tab:hover { color: var(--label); }
-.view-tab:active { transform: scale(.92); transition-duration: .2s, var(--t-press); }
-.view-tab[aria-selected="true"] { color: var(--accent); }
+.view-tab:active { transform: scale(.92); transition-duration: .2s, var(--t-move), var(--t-move), var(--t-press); }
+.view-tab[aria-selected="true"] { color: var(--accent); gap: 6px; padding: 0 11px 0 9px; }
 .view-pill { /* the selected tab's background, gliding between tabs */
-  position: absolute; z-index: 0; top: 3px; left: 0; height: calc(100% - 6px); width: 0; border-radius: 13px; pointer-events: none;
+  position: absolute; z-index: 0; top: 3px; left: 0; height: calc(100% - 6px); width: 0; border-radius: 11px; pointer-events: none;
   background: var(--field-focus);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  transition: transform var(--t-move) var(--spring);
+  transition: transform var(--t-move) var(--spring), width var(--t-move) var(--spring);
   will-change: transform;
 }
 .view-pill.jump { transition: none; }
-.view-icon { position: relative; width: 17px; height: 17px; transition: transform var(--t-settle) var(--spring-bounce); }
-.view-tab[aria-selected="true"] .view-icon { transform: scale(1.1); }
-.view-label { font-size: 10px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
-.badge {
-  position: absolute; top: -5px; left: 11px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
-  background: var(--danger-fill); color: #fff; font-size: 9.5px; font-weight: 700; line-height: 15px; text-align: center;
-  box-shadow: 0 0 0 2px var(--glass-strong);
+.view-icon { position: relative; flex: none; width: 17px; height: 17px; }
+.view-label {
+  font-size: 12px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap;
+  max-width: 0; opacity: 0; overflow: hidden;
+  transition: max-width var(--t-move) var(--spring), opacity .2s;
 }
+.view-tab[aria-selected="true"] .view-label { max-width: 90px; opacity: 1; transition-delay: 0s, .08s; }
+/* attention dot on a tab's icon */
+.dot {
+  position: absolute; top: -2px; right: -3px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger-fill); box-shadow: 0 0 0 2px var(--field-solid, var(--glass-strong));
+}
+.dot.warn { background: #e08a00; }
+.dot.accent { background: var(--accent-fill); }
 
 .row-title svg.row-star { display: inline-block; width: 11px; height: 11px; margin-left: 5px; vertical-align: -1px; color: #e3a008; }
 .issue-sub { color: var(--danger); font-weight: 500; }
@@ -827,9 +832,6 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .app-icon.glyph { color: #fff; padding: 13px; }
 
 /* ---------- Generated email addresses and mail ---------- */
-.views.seven .view-tab { padding: 6px 2px 4px; }
-.views.seven .view-label { font-size: 10px; letter-spacing: -0.02em; }
-.badge.accent { background: var(--accent-fill); }
 .user-edit { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .user-edit .in { flex: 1; min-width: 0; }
 .mail-badge {
@@ -937,3 +939,71 @@ kbd { font: 500 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 
 .mail-alert .notice.temp-warn { margin: 0 0 12px; text-align: left; }
 .mail-alert .mail-credit { margin: 4px 0 14px; }
 .svc > .btn-plain.danger-text { display: flex; margin: -2px 0 0 auto; height: 26px; font-size: 12px; }
+
+/* ---------- Stacks: one row per site, its accounts tucked underneath ---------- */
+.list-sel { transition: transform var(--t-move) var(--spring), height var(--t-move) var(--spring), opacity .2s, background-color .2s; }
+.row.stack-row { grid-template-columns: 34px 1fr 14px; cursor: default; }
+/* two cards peek out behind the tile, so a stack reads as more than one account at a glance */
+.stack { position: relative; width: 34px; height: 34px; isolation: isolate; }
+.stack::before, .stack::after {
+  content: ''; position: absolute; z-index: -1; left: 50%; height: 12px; border-radius: 7px; background: currentColor; translate: -50% 0;
+  transition: translate var(--t-move) var(--spring), opacity .25s;
+}
+.stack::before { top: -6px; width: 22px; opacity: .12; }
+.stack::after { top: -3px; width: 28px; opacity: .22; }
+.stack .tile { position: relative; }
+.row.stack-row.open .stack::before, .row.stack-row.open .stack::after { translate: -50% 4px; opacity: 0; }
+.row-chev { width: 14px; height: 14px; color: var(--tertiary, var(--secondary)); opacity: .7; transition: transform var(--t-move) var(--spring); }
+.row.stack-row.open .row-chev { transform: rotate(90deg); }
+.list:focus-within .row[aria-selected="true"] .row-chev, .sidebar.list-active .row[aria-selected="true"] .row-chev { color: inherit; }
+/* the accounts of an open stack: indented under the site's name, no tile of their own */
+.row.child { grid-template-columns: 1fr; height: 44px; padding-left: 54px; }
+.row.child.single { height: 34px; }
+.row.child .row-title { font-weight: 500; }
+.row.child.enter { animation-name: child-in; }
+@keyframes child-in { from { opacity: 0; transform: translateY(-6px); } }
+
+/* ---------- Welcome tour (first run only) ---------- */
+.welcome {
+  width: 460px; padding: 34px 34px 20px; border-radius: 30px;
+  display: flex; flex-direction: column; animation: rise .7s var(--spring) both;
+}
+.welcome.leaving { animation: lock-leave .26s var(--ease-out) both; }
+/* the pages share one cell, so the card is as tall as the tallest page and never jumps */
+.welcome-pages { display: grid; }
+.welcome-page {
+  grid-area: 1 / 1; display: flex; flex-direction: column; align-items: flex-start;
+  opacity: 0; transform: translateX(28px); visibility: hidden;
+  transition: opacity .28s var(--ease-out), transform var(--t-move) var(--spring), visibility 0s .28s;
+}
+.welcome-page.before { transform: translateX(-28px); }
+.welcome-page.current { opacity: 1; transform: none; visibility: visible; transition-delay: .06s, .06s, 0s; }
+.welcome-page.hero-page { align-items: center; justify-content: center; text-align: center; }
+.welcome-page.hero-page .app-icon { width: 96px; height: 96px; border-radius: 25px; padding: 14px; margin-bottom: 22px; }
+.welcome h1 { font-size: 28px; line-height: 1.15; font-weight: 700; letter-spacing: -0.025em; margin: 0 0 10px; text-wrap: balance; }
+.welcome h2 { font-size: 21px; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 18px; text-wrap: balance; }
+.welcome-lead { margin: 0; max-width: 34ch; color: var(--secondary); font-size: 14px; line-height: 1.5; text-wrap: pretty; }
+.feature-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 16px; }
+.feature { display: grid; grid-template-columns: 36px 1fr; gap: 14px; align-items: start; }
+.feature strong { display: block; font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 2px; }
+.feature p { margin: 0; color: var(--secondary); font-size: 12.5px; line-height: 1.45; text-wrap: pretty; }
+.feature-glyph {
+  width: 36px; height: 36px; border-radius: 10px; padding: 8px; color: #fff;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--glyph) 78%, #fff), var(--glyph));
+  box-shadow: 0 6px 14px -8px var(--glyph), inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 0.5px rgba(0, 0, 0, 0.14);
+}
+.welcome-foot { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; margin-top: 28px; }
+.welcome-foot #welcomeBack { justify-self: start; }
+.welcome-foot #welcomeNext { justify-self: end; height: 34px; padding: 0 18px; }
+.welcome-dots { display: flex; gap: 2px; }
+.welcome-dot { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%; }
+.welcome-dot::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--secondary); opacity: .3;
+  transition: opacity .2s, width var(--t-move) var(--spring);
+}
+.welcome-dot[aria-selected="true"]::before { opacity: 1; background: var(--accent-fill); width: 16px; border-radius: 4px; }
+.welcome-dot:hover::before { opacity: .6; }
+.welcome-dot[aria-selected="true"]:hover::before { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .welcome-page, .welcome-page.before { transform: none; transition: opacity .15s, visibility 0s .15s; }
+}

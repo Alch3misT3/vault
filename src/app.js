@@ -18,6 +18,7 @@ const state = {
   breach: new Map(), // id -> how often its password appears in known breaches (only if the check is on)
   breachOn: false,
   ui: { changeQueue: null, emailChange: null }, // progress kept inside the vault
+  openGroups: new Set(), // sites with several accounts whose stack is open in the list
   tool: null,        // 'email': the Change Email Everywhere checklist in the detail pane
   changeAwait: null, // { id, at }: a change page was opened; ask how it went when the window is back
 };
@@ -390,6 +391,9 @@ async function showLock() {
   $('#lockError').classList.remove('pk-info');
   $('#pkUnlock').hidden = first || !lockPasskeys.length;
   updateLockUI();
+  $('#welcome').hidden = true;
+  $('#lockForm').hidden = false;
+  if (first && showWelcome(() => setTimeout(() => $('#pw1').focus(), 30))) return; // new here: the tour comes first
   setTimeout(() => $('#pw1').focus(), 30);
 }
 
@@ -478,6 +482,11 @@ async function lockNow() {
 
 // ---------- search ----------
 const SEVERITY = { breached: 0, reused: 1, weak: 2, old: 3 };
+// Red while a password is breached, reused or weak; amber when the only issue is age.
+function securityTone() {
+  for (const iss of health().values()) if (iss.some((x) => x.kind !== 'old')) return 'danger';
+  return 'warn';
+}
 function inView() {
   const v = state.view;
   if (v === 'deleted') return state.items.filter((i) => i.deletedAt).sort((a, b) => b.deletedAt - a.deletedAt);
@@ -544,15 +553,20 @@ function renderViews() {
   for (const t of [...views.querySelectorAll('.view-tab')]) t.remove(); // the pill stays, so it can glide
   const vs = shownViews();
   if (!vs.some((v) => v.id === state.view)) state.view = 'all';
-  views.style.gridTemplateColumns = `repeat(${vs.length}, max-content)`;
-  views.classList.toggle('seven', vs.length > 6);
   const unreadMail = typeof mail !== 'undefined' ? mail.messages.filter((m) => !m.seen).length : 0;
-  views.append(...vs.map((v) => h('button', {
-    class: 'view-tab', role: 'tab', id: 'view-' + v.id, 'aria-selected': String(state.view === v.id),
-    title: `${v.label} (${counts[v.id]})`, onclick: () => setView(v.id),
-  }, h('span', { class: 'view-icon' }, icon(v.icon), v.id === 'security' && counts.security ? h('b', { class: 'badge' }, counts.security > 99 ? '99+' : String(counts.security)) : null,
-    v.id === 'mail' && unreadMail ? h('b', { class: 'badge accent' }, unreadMail > 99 ? '99+' : String(unreadMail)) : null),
-  h('span', { class: 'view-label' }, v.label))));
+  // Icons only; the selected tab also shows its name. Counts live in the tooltip and the list header,
+  // and a small dot marks a view that wants attention (security issues, unread mail).
+  const dot = (v) => (v.id === 'security' && counts.security ? h('b', { class: 'dot ' + securityTone() })
+    : v.id === 'mail' && unreadMail ? h('b', { class: 'dot accent' }) : null);
+  views.append(...vs.map((v) => {
+    const n = v.id === 'mail' ? unreadMail : counts[v.id];
+    const tip = v.id === 'security' ? (n ? `${v.label}: ${n} ${n === 1 ? 'issue' : 'issues'}` : `${v.label}: all clear`)
+      : v.id === 'mail' ? (n ? `${v.label}: ${n} unread` : v.label) : `${v.label} (${n})`;
+    return h('button', {
+      class: 'view-tab', role: 'tab', id: 'view-' + v.id, 'aria-selected': String(state.view === v.id),
+      'aria-label': tip, title: tip, onclick: () => setView(v.id),
+    }, h('span', { class: 'view-icon' }, icon(v.icon), dot(v)), h('span', { class: 'view-label', 'aria-hidden': 'true' }, v.label));
+  }));
   placePill(views, '.view-pill', document.getElementById('view-' + state.view), 'x');
   return counts;
 }
@@ -567,6 +581,7 @@ function placePill(parent, sel, target, axis) {
   const jump = fresh || pill.dataset.hidden === '1' || pill.dataset.jump === '1';
   pill.classList.toggle('jump', jump);
   if (axis === 'x') pill.style.width = target.offsetWidth + 'px';
+  else pill.style.height = target.offsetHeight + 'px';
   pill.style.transform = axis === 'x' ? `translateX(${target.offsetLeft}px)` : `translateY(${target.offsetTop}px)`;
   pill.style.opacity = '';
   delete pill.dataset.hidden; delete pill.dataset.jump;
@@ -601,6 +616,83 @@ function rowSub(it) {
   return it.username || (window.loginLink(it) || {}).host || 'No user name';
 }
 
+// ---------- stacks: one row per site, its accounts underneath ----------
+// Accounts with the same name (or, without one, the same site) share a stack. The Codes view
+// stays flat, since each row there shows its own live code.
+function stackKey(it) {
+  const t = (it.title || '').trim().toLowerCase();
+  return t || ((window.loginLink(it) || {}).host || '').replace(/^www\./, '') || 'id:' + it.id;
+}
+function stacks(res) {
+  const out = [];
+  const byKey = new Map();
+  for (const { it } of res) {
+    const key = state.view === 'codes' ? 'id:' + it.id : stackKey(it);
+    let g = byKey.get(key);
+    if (!g) { g = { key, items: [] }; byKey.set(key, g); out.push(g); }
+    g.items.push(it);
+  }
+  // Inside a stack: by user name, so the same name sits together, newest edit first.
+  const byUser = (a, b) => (a.username || '').localeCompare(b.username || '', undefined, { sensitivity: 'base' }) || (b.updatedAt || 0) - (a.updatedAt || 0);
+  if (state.view !== 'deleted') for (const g of out) if (g.items.length > 1) g.items.sort(byUser);
+  return out;
+}
+// While searching, every stack with a match is open, so the matching accounts show.
+const isOpen = (g) => !!state.query.trim() || state.openGroups.has(g.key);
+// The accounts in the order the list shows them (a stack keeps its accounts together).
+const listOrder = () => stacks(matches()).flatMap((g) => g.items);
+const findItem = (id) => state.items.find((x) => x.id === id) || state.sitePasskeys.find((x) => x.id === id);
+// The selected account's row, or the closed stack that holds it.
+function selectedRowEl() {
+  const row = document.getElementById('row-' + state.selectedId);
+  if (row) return row;
+  const it = findItem(state.selectedId);
+  return it ? document.querySelector(`#list .row.stack-row[data-key="${CSS.escape(stackKey(it))}"]`) : null;
+}
+
+function itemRow(it, q, child = false, dup = false) {
+  const sub = child ? childSub(it, dup) : rowSub(it);
+  return h('li', {
+    class: 'row' + (child ? ' child' + (sub ? '' : ' single') : ''), role: 'option', id: 'row-' + it.id, 'data-id': it.id,
+    'aria-selected': String(it.id === state.selectedId),
+    onclick: () => select(it.id, true),
+    ondblclick: () => { if (it.deletedAt) return; const l = window.loginLink(it); if (l) openLink(l.url); },
+    oncontextmenu: (e) => { e.preventDefault(); rowMenu(it, e); },
+  }, child ? null : tile(it), h('div', { class: 'row-text' },
+    h('div', { class: 'row-title' }, highlight(child ? it.username || 'No user name' : it.title, q),
+      it.favorite && state.view !== 'favorites' ? icon('i-star-fill', 'row-star') : null),
+    sub ? h('div', { class: 'row-sub' }, sub) : null));
+}
+// Under a stack the row's name is the user name, so the second line only says what sets it apart.
+function childSub(it, dup) {
+  if (it.passkey) return 'Passkey';
+  if (it.pending && !it.deletedAt) return h('span', { class: 'pending-sub' }, 'Changing password');
+  if (state.view === 'deleted' || state.view === 'security') return rowSub(it);
+  return dup ? `Edited ${fmtDate(it.updatedAt)}` : null;
+}
+function groupRow(g, open, q) {
+  const first = g.items[0];
+  const n = g.items.length;
+  const fix = state.view === 'security' ? 0 : g.items.filter((x) => x.pending && !x.deletedAt).length;
+  return h('li', {
+    class: 'row stack-row' + (open ? ' open' : ''), role: 'option', id: 'grp-' + first.id, 'data-id': first.id, 'data-key': g.key,
+    'aria-expanded': String(open), 'aria-selected': String(!open && g.items.some((x) => x.id === state.selectedId)),
+    onclick: () => toggleStack(g),
+  }, h('span', { class: 'stack' }, tile(first)), h('div', { class: 'row-text' },
+    h('div', { class: 'row-title' }, highlight(first.title || (window.loginLink(first) || {}).host || '', q),
+      g.items.some((x) => x.favorite) && state.view !== 'favorites' ? icon('i-star-fill', 'row-star') : null),
+    h('div', { class: 'row-sub' }, `${n} accounts`, fix ? h('span', { class: 'pending-sub' }, ` · ${fix} changing password`) : null)),
+  icon('i-chevron', 'row-chev'));
+}
+// Opening a stack selects its first account; closing it keeps the selection (the stack row stands in).
+function toggleStack(g) {
+  if (state.openGroups.has(g.key)) { state.openGroups.delete(g.key); return renderList(); }
+  state.openGroups.add(g.key);
+  state.justOpened = g.key;
+  if (!g.items.some((x) => x.id === state.selectedId)) return select(g.items[0].id, true);
+  renderList();
+}
+
 function renderList() {
   const list = $('#list');
   const counts = renderViews();
@@ -614,22 +706,28 @@ function renderList() {
     : state.view === 'deleted' && counts.deleted ? `Recently Deleted · removed after ${BIN_DAYS} days`
     : `${v.id === 'all' ? '' : v.label + ' · '}${res.length} ${res.length === 1 ? 'Account' : 'Accounts'}`;
 
+  const groups = stacks(res);
   if (state.mode === 'view') {
-    if (res.length && !res.some((r) => r.it.id === state.selectedId)) state.selectedId = res[0].it.id;
+    if (res.length && !res.some((r) => r.it.id === state.selectedId)) state.selectedId = groups[0].items[0].id;
     if (!res.length) state.selectedId = null;
   }
   const enter = state.animateRows;
   state.animateRows = false;
-  const rows = res.map(({ it }, i) => h('li', {
-    class: 'row' + (enter && i < 14 ? ' enter' : ''), role: 'option', id: 'row-' + it.id, 'data-id': it.id,
-    style: enter && i < 14 ? `--i:${i}` : null,
-    'aria-selected': String(it.id === state.selectedId),
-    onclick: () => select(it.id, true),
-    ondblclick: () => { if (it.deletedAt) return; const l = window.loginLink(it); if (l) openLink(l.url); },
-    oncontextmenu: (e) => { e.preventDefault(); rowMenu(it, e); },
-  }, tile(it), h('div', { class: 'row-text' },
-    h('div', { class: 'row-title' }, highlight(it.title, q), it.favorite && state.view !== 'favorites' ? icon('i-star-fill', 'row-star') : null),
-    h('div', { class: 'row-sub' }, rowSub(it)))));
+  const rows = [];
+  const add = (el) => { if (enter && rows.length < 14) { el.classList.add('enter'); el.style.setProperty('--i', rows.length); } rows.push(el); };
+  for (const g of groups) {
+    if (g.items.length === 1) { add(itemRow(g.items[0], q)); continue; }
+    const open = isOpen(g);
+    add(groupRow(g, open, q));
+    if (!open) continue;
+    const names = g.items.map((x) => (x.username || '').toLowerCase());
+    g.items.forEach((it, k) => {
+      const row = itemRow(it, q, true, names.filter((n) => n === (it.username || '').toLowerCase()).length > 1);
+      if (state.justOpened === g.key && !enter) { row.classList.add('enter'); row.style.setProperty('--i', k); } // the stack unfolds
+      add(row);
+    });
+  }
+  state.justOpened = null;
   const pill = list.querySelector(':scope > .list-sel');
   for (const c of [...list.children]) if (c !== pill) c.remove(); // keep the selection pill so it can glide
   list.append(...rows);
@@ -641,10 +739,10 @@ function renderList() {
       : h('li', { class: 'empty-list' }, h('strong', {}, title), text));
   }
   if (enter && pill) pill.dataset.jump = '1';
-  const selPill = placePill(list, '.list-sel', document.getElementById('row-' + state.selectedId), 'y');
+  const sel = selectedRowEl();
+  const selPill = placePill(list, '.list-sel', sel, 'y');
   if (enter && selPill.dataset.hidden !== '1' && !window.fx.reduced()) selPill.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 400, delay: 120, fill: 'backwards' });
   if (state.view === 'codes') tickCodes();
-  const sel = document.getElementById('row-' + state.selectedId);
   if (sel) {
     // Scroll only the list (scrollIntoView would also nudge the window itself).
     const top = sel.offsetTop - list.offsetTop;
@@ -1017,6 +1115,11 @@ async function select(id, fly) {
   if (state.mode !== 'view' && !(await cancelEdit())) return;
   state.tool = null;
   state.selectedId = id;
+  const it = findItem(id);
+  if (it && state.view !== 'codes' && !state.openGroups.has(stackKey(it))) { // a stack opens to show its selected account
+    state.openGroups.add(stackKey(it));
+    state.justOpened = stackKey(it);
+  }
   state.reveal.clear();
   state.flyTile = !!fly; // clicked in the list: the tile flies from the row into the header
   render();
@@ -1607,11 +1710,11 @@ function moveSelection(delta) {
     openMessage(rows[Math.max(0, Math.min(rows.length - 1, (i < 0 ? -1 : i) + delta))].id);
     return;
   }
-  const res = matches();
-  if (!res.length) return;
-  let i = res.findIndex((r) => r.it.id === state.selectedId);
-  i = Math.max(0, Math.min(res.length - 1, (i < 0 ? -1 : i) + delta));
-  select(res[i].it.id);
+  const order = listOrder();
+  if (!order.length) return;
+  let i = order.findIndex((x) => x.id === state.selectedId);
+  i = Math.max(0, Math.min(order.length - 1, (i < 0 ? -1 : i) + delta));
+  select(order[i].id);
 }
 
 document.addEventListener('keydown', (e) => {

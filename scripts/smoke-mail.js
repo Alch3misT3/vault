@@ -303,7 +303,7 @@ module.exports = async function mailTest({ app, win, js, wait, waitFor, shot, ch
     const c1 = await js("mailApi('check')");
     check('new mail is fetched from mail.tm', c1 && c1.added === 1, JSON.stringify(c1));
     await waitFor("mail.messages.length === 1", 3000);
-    check('the Mail view appears, with a new-mail badge', await waitFor("!!document.getElementById('view-mail') && !!document.querySelector('#view-mail .badge')", 3000));
+    check('the Mail view appears, with a new-mail dot', await waitFor("!!document.getElementById('view-mail') && !!document.querySelector('#view-mail .dot')", 3000));
     const mstore = fs.readFileSync(path.join(app.getPath('userData'), 'mail.vault'), 'utf8');
     check('mail is stored encrypted (no subject, sender or code readable on disk)', !/Confirm your email|739204|forum\.example/.test(mstore) && /"app":"vault-mail"/.test(mstore));
     await js("setView('mail'); true");

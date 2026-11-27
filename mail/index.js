@@ -50,7 +50,8 @@ module.exports = function createMail({ app, getKey, getExtra, saveExtra, send, l
   function saveAddr(rec) { save({ addrs: { ...addrs(), [rec.id]: rec } }); }
   function dropAddr(id) { const a = { ...addrs() }; delete a[id]; save({ addrs: a }); }
 
-  const temp = () => mailTm({ base: t.base.mailtm });
+  let tmClient = null; // one client, so its spacing between calls covers every inbox
+  const temp = () => { if (!tmClient || tmClient.base !== t.base.mailtm) tmClient = Object.assign(mailTm({ base: t.base.mailtm }), { base: t.base.mailtm }); return tmClient; };
   const aliasSvc = (id) => { const key = ((cfg().alias || {}).keys || {})[id]; return key && ALIAS_SERVICES[id] ? ALIAS_SERVICES[id]({ key, base: t.base[id] }) : null; };
   const cf = (token) => CF.client({ token, base: t.base.cloudflare });
 

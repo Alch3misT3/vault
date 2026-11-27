@@ -78,7 +78,7 @@ function client({ token, base = 'https://api.cloudflare.com/client/v4', timeout 
 const ruleBody = (address, enabled) => ({
   name: 'Vault: ' + address, enabled: !!enabled,
   matchers: [{ type: 'literal', field: 'to', value: address }],
-  actions: [{ type: 'worker', value: [SCRIPT] }],
+  actions: [{ type: 'worker', value: [SCRIPT] }], // the Worker's script name, as Cloudflare's own wrangler sends it
 });
 
 // ---- the Worker's own API (on its workers.dev address) ----

@@ -38,30 +38,47 @@ const rand = (n, set = 'abcdefghijkmnopqrstuvwxyz23456789') => Array.from(crypto
 const slug = (s) => (String(s || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '').slice(0, 12)) || 'site';
 
 // ---------- one-time inbox: mail.tm ----------
-function mailTm({ base = 'https://api.mail.tm' } = {}) {
+function mailTm({ base = 'https://api.mail.tm', gap = 400, backoff = [2000, 5000, 10000] } = {}) {
+  // mail.tm limits requests per IP: keep calls apart, and when it still says "too many" (429),
+  // wait and try again a few times before giving up.
+  let next = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function tmCall(method, path, opts) {
+    for (let i = 0; ; i++) {
+      const wait = next - Date.now();
+      next = Math.max(Date.now(), next) + gap;
+      if (wait > 0) await sleep(wait);
+      try { return await call(base, method, path, opts); } catch (e) {
+        if (e.code !== 'rate' || i >= backoff.length) throw e;
+        next = Date.now() + backoff[i];
+      }
+    }
+  }
   const auth = (token) => ({ Authorization: 'Bearer ' + token });
+  // With Accept: application/json a list is a plain array; as JSON-LD it is wrapped in hydra:member.
+  const members = (r) => (Array.isArray(r) ? r : (r && r['hydra:member']) || []);
   async function token(acct) {
-    const r = await call(base, 'POST', '/token', { body: { address: acct.address, password: acct.password } });
+    const r = await tmCall('POST', '/token', { body: { address: acct.address, password: acct.password } });
     acct.token = r.token;
     return r.token;
   }
   // Retry once with a fresh token if the old one ran out.
   async function authed(acct, method, path, opts = {}) {
     if (!acct.token) await token(acct);
-    try { return await call(base, method, path, { ...opts, headers: auth(acct.token) }); } catch (e) {
+    try { return await tmCall(method, path, { ...opts, headers: auth(acct.token) }); } catch (e) {
       if (e.code !== 'auth') throw e;
       await token(acct);
-      return call(base, method, path, { ...opts, headers: auth(acct.token) });
+      return tmCall(method, path, { ...opts, headers: auth(acct.token) });
     }
   }
   return {
     id: 'mailtm', name: 'mail.tm', site: 'https://mail.tm', keepsDays: 7,
     async create() {
-      const d = await call(base, 'GET', '/domains');
-      const domains = (d && d['hydra:member'] || []).filter((x) => x.isActive && !x.isPrivate).map((x) => x.domain);
+      const d = await tmCall('GET', '/domains');
+      const domains = members(d).filter((x) => x.isActive && !x.isPrivate).map((x) => x.domain);
       if (!domains.length) throw new ServiceError('failed', 0, 'no domain');
       const acct = { address: `${rand(10, 'abcdefghijkmnopqrstuvwxyz')}${rand(4, '23456789')}@${domains[crypto.randomInt(domains.length)]}`, password: rand(28, 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789') };
-      const a = await call(base, 'POST', '/accounts', { body: { address: acct.address, password: acct.password } });
+      const a = await tmCall('POST', '/accounts', { body: { address: acct.address, password: acct.password } });
       acct.accountId = a.id;
       await token(acct);
       return acct; // { address, password, accountId, token }
@@ -69,7 +86,7 @@ function mailTm({ base = 'https://api.mail.tm' } = {}) {
     // newest first: [{ id, createdAt }]
     async list(acct) {
       const r = await authed(acct, 'GET', '/messages?page=1');
-      return (r && r['hydra:member'] || []).map((m) => ({ id: String(m.id), createdAt: Date.parse(m.createdAt) || Date.now() }));
+      return members(r).map((m) => ({ id: String(m.id), createdAt: Date.parse(m.createdAt) || Date.now() }));
     },
     async raw(acct, id) {
       const r = await authed(acct, 'GET', '/sources/' + encodeURIComponent(id));

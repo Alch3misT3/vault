@@ -64,7 +64,10 @@ module.exports = async function mailTest({ app, win, js, wait, waitFor, shot, ch
     const tmAcct = (req) => { const t = (req.headers.authorization || '').replace(/^Bearer /, ''); const a = tm.tokens.get(t); return a && !tm.deleted.has(a.address) ? a : null; };
     const TM = await serve('mailtm', (req, j) => {
       const u = new URL(req.url, 'http://x');
-      if (req.method === 'GET' && u.pathname === '/domains') return { 'hydra:member': [{ id: 'd1', domain: 'tempmail.test', isActive: true, isPrivate: false }] };
+      // like the real mail.tm: with Accept: application/json a list is a plain array (messages below stay JSON-LD)
+      if (req.method === 'GET' && u.pathname === '/domains') return [200, [{ id: 'd1', domain: 'tempmail.test', isActive: true, isPrivate: false }]];
+      // the first new inbox is "too many requests" once, as mail.tm does after a quick burst
+      if (req.method === 'POST' && u.pathname === '/accounts' && !tm.limited) { tm.limited = true; return [429, { code: 429 }]; }
       if (req.method === 'POST' && u.pathname === '/accounts') { const id = 'acc' + (tm.accounts.size + 1); tm.accounts.set(j.address, { id, address: j.address, password: j.password, messages: [] }); return [201, { id, address: j.address }]; }
       if (req.method === 'POST' && u.pathname === '/token') { const a = tm.accounts.get(j.address); if (!a || a.password !== j.password || tm.deleted.has(a.address)) return [401, { code: 401 }]; const token = crypto.randomBytes(16).toString('hex'); tm.tokens.set(token, a); return { id: a.id, token }; }
       const a = tmAcct(req);
